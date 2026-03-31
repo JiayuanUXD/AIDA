@@ -1,0 +1,10 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /projects/{projectId}/{allPaths=**} {
+      // Allow access if the user is authenticated
+      // In a real app, you'd check if the user owns the project
+      allow read, write: if request.auth != null;
+    }
+  }
+}

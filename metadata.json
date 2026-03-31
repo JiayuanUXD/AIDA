@@ -1,0 +1,7 @@
+{
+  "name": "AIDA",
+  "description": "AI Design Acceptance",
+  "requestFramePermissions": [
+    "display-capture"
+  ]
+}

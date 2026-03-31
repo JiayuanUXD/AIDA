@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && (!('userId' in resource.data) || request.auth.uid == resource.data.userId);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "honeylipsor@gmail.com");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidAnalysisResult(data) {
+      return data.designImage is string && 
+             data.buildImage is string &&
+             data.timestamp is number &&
+             (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid)) &&
+             (!('name' in data) || (data.name is string && data.name.size() <= 100)) &&
+             (!('isPublic' in data) || (data.isPublic is bool));
+    }
+
+    function isValidProject(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid)) &&
+             data.updatedAt is number &&
+             (!('isPublic' in data) || (data.isPublic is bool));
+    }
+
+    function isValidCategory(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 50 &&
+             (!('userId' in data) || (data.userId is string && data.userId == request.auth.uid)) &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidUser(data) {
+      let isRoleValid = data.role is string && data.role.size() <= 50;
+      let isNotEscalating = data.role != 'admin' || isAdmin();
+      return data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 100 &&
+             isRoleValid && isNotEscalating &&
+             data.updatedAt is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /projects/{projectId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && 'userId' in request.resource.data && isValidProject(request.resource.data);
+      allow update: if isDocOwner() && isValidProject(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && 'userId' in request.resource.data && isValidCategory(request.resource.data);
+      allow update: if isDocOwner() && isValidCategory(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /analysisResults/{resultId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && 'userId' in request.resource.data && isValidAnalysisResult(request.resource.data);
+      allow update: if isDocOwner() && isValidAnalysisResult(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && request.auth.uid == userId;
+      allow read: if isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if isOwner(userId) && isValidUser(request.resource.data);
+      allow delete: if isAdmin();
+    }
+  }
+}
