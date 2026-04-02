@@ -36,36 +36,3 @@ export interface Drawing {
   color: string;
   width: number;
 }
-
-export interface ReviewRound {
-  id: string;
-  projectId: string;
-  roundNumber: number;
-  status: 'pending' | 'in_review' | 'passed' | 'failed';
-  designImage?: string;
-  buildImage?: string;
-  summary?: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface ReviewItem {
-  id: string;
-  roundId: string;
-  type: 'content' | 'layout' | 'style';
-  description: string;
-  rect?: { x: number; y: number; width: number; height: number };
-  severity: 'low' | 'medium' | 'high';
-  status: 'pending' | 'fixed' | 'ignored';
-  screenshot?: string;
-  author?: string;
-  createdAt: number;
-  resolvedAt?: number;
-}
-
-export interface ReviewRoundWithItems extends ReviewRound {
-  items: ReviewItem[];
-  itemCount: number;
-  pendingCount: number;
-  fixedCount: number;
-}

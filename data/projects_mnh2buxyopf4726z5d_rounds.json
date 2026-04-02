@@ -1,0 +1,200 @@
+[
+  {
+    "id": "mnh6v3qqv2qa84dh6ns",
+    "projectId": "mnh2buxyopf4726z5d",
+    "roundNumber": 1,
+    "status": "Pending",
+    "designImage": "/api/storage/file/projects_mnh2buxyopf4726z5d_design_1775109595077.jpg",
+    "buildImage": "/api/storage/file/projects_mnh2buxyopf4726z5d_build_1775109595146.jpg",
+    "differences": [
+      {
+        "title": "缺失图片标签",
+        "type": "CONTENT",
+        "description": "开发稿中缺失了主图右下角的“养护手册 >”标签。",
+        "rect": {
+          "x": 312,
+          "y": 488,
+          "width": 68,
+          "height": 20
+        },
+        "id": "1",
+        "status": "pending"
+      },
+      {
+        "title": "缺失徽标",
+        "type": "CONTENT",
+        "description": "开发稿中缺失了底部AI图标右上角的“AI助手”红色徽标。",
+        "rect": {
+          "x": 109,
+          "y": 763,
+          "width": 33,
+          "height": 16
+        },
+        "id": "2",
+        "status": "pending"
+      },
+      {
+        "title": "按钮文本不匹配",
+        "type": "CONTENT",
+        "description": "底部左侧按钮的文本内容不一致，设计稿为“会员0元领”，开发稿为“加购3件单价约 ¥21.28”。",
+        "rect": {
+          "x": 148,
+          "y": 763,
+          "width": 113,
+          "height": 40
+        },
+        "id": "3",
+        "status": "pending"
+      },
+      {
+        "title": "按钮样式不匹配",
+        "type": "STYLE",
+        "description": "底部左侧按钮的背景颜色不一致，设计稿为绿色，开发稿为红色。",
+        "rect": {
+          "x": 148,
+          "y": 763,
+          "width": 113,
+          "height": 40
+        },
+        "id": "4",
+        "status": "pending"
+      }
+    ],
+    "notes": "",
+    "timestamp": 1775117057714,
+    "createdAt": 1775117057722,
+    "updatedAt": 1775117057722
+  },
+  {
+    "id": "mnh6v8jyda4yos4qmbw",
+    "projectId": "mnh2buxyopf4726z5d",
+    "roundNumber": 1,
+    "status": "Pending",
+    "designImage": "/api/storage/file/projects_mnh2buxyopf4726z5d_design_1775109595077.jpg",
+    "buildImage": "/api/storage/file/projects_mnh2buxyopf4726z5d_build_1775109595146.jpg",
+    "differences": [
+      {
+        "title": "缺失图片标签",
+        "type": "CONTENT",
+        "description": "开发稿中缺失了主图右下角的“养护手册 >”标签。",
+        "rect": {
+          "x": 312,
+          "y": 488,
+          "width": 68,
+          "height": 20
+        },
+        "id": "1",
+        "status": "pending"
+      },
+      {
+        "title": "缺失徽标",
+        "type": "CONTENT",
+        "description": "开发稿中缺失了底部AI图标右上角的“AI助手”红色徽标。",
+        "rect": {
+          "x": 109,
+          "y": 763,
+          "width": 33,
+          "height": 16
+        },
+        "id": "2",
+        "status": "pending"
+      },
+      {
+        "title": "按钮文本不匹配",
+        "type": "CONTENT",
+        "description": "底部左侧按钮的文本内容不一致，设计稿为“会员0元领”，开发稿为“加购3件单价约 ¥21.28”。",
+        "rect": {
+          "x": 148,
+          "y": 763,
+          "width": 113,
+          "height": 40
+        },
+        "id": "3",
+        "status": "pending"
+      },
+      {
+        "title": "按钮样式不匹配",
+        "type": "STYLE",
+        "description": "底部左侧按钮的背景颜色不一致，设计稿为绿色，开发稿为红色。",
+        "rect": {
+          "x": 148,
+          "y": 763,
+          "width": 113,
+          "height": 40
+        },
+        "id": "4",
+        "status": "pending"
+      }
+    ],
+    "notes": "",
+    "timestamp": 1775117063950,
+    "createdAt": 1775117063956,
+    "updatedAt": 1775117063956
+  },
+  {
+    "id": "mnh6v9zop3wnvksrdle",
+    "projectId": "mnh2buxyopf4726z5d",
+    "roundNumber": 1,
+    "status": "Pending",
+    "designImage": "/api/storage/file/projects_mnh2buxyopf4726z5d_design_1775109595077.jpg",
+    "buildImage": "/api/storage/file/projects_mnh2buxyopf4726z5d_build_1775109595146.jpg",
+    "differences": [
+      {
+        "title": "缺失图片标签",
+        "type": "CONTENT",
+        "description": "开发稿中缺失了主图右下角的“养护手册 >”标签。",
+        "rect": {
+          "x": 312,
+          "y": 488,
+          "width": 68,
+          "height": 20
+        },
+        "id": "1",
+        "status": "pending"
+      },
+      {
+        "title": "缺失徽标",
+        "type": "CONTENT",
+        "description": "开发稿中缺失了底部AI图标右上角的“AI助手”红色徽标。",
+        "rect": {
+          "x": 109,
+          "y": 763,
+          "width": 33,
+          "height": 16
+        },
+        "id": "2",
+        "status": "pending"
+      },
+      {
+        "title": "按钮文本不匹配",
+        "type": "CONTENT",
+        "description": "底部左侧按钮的文本内容不一致，设计稿为“会员0元领”，开发稿为“加购3件单价约 ¥21.28”。",
+        "rect": {
+          "x": 148,
+          "y": 763,
+          "width": 113,
+          "height": 40
+        },
+        "id": "3",
+        "status": "pending"
+      },
+      {
+        "title": "按钮样式不匹配",
+        "type": "STYLE",
+        "description": "底部左侧按钮的背景颜色不一致，设计稿为绿色，开发稿为红色。",
+        "rect": {
+          "x": 148,
+          "y": 763,
+          "width": 113,
+          "height": 40
+        },
+        "id": "4",
+        "status": "pending"
+      }
+    ],
+    "notes": "",
+    "timestamp": 1775117065812,
+    "createdAt": 1775117065818,
+    "updatedAt": 1775117065818
+  }
+]

@@ -1,27 +1,33 @@
 import React, { useState, useEffect, Component, ErrorInfo } from 'react';
+import { GoogleGenAI, Type } from "@google/genai";
 import { 
   Upload, Eye, EyeOff, ZoomIn, ZoomOut, SlidersHorizontal, Layers, RotateCcw,
   AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal,
   AlignStartVertical, AlignCenterVertical, AlignEndVertical, Link as LinkIcon, Loader2, Focus,
-  Sun, Moon, Split, Columns2, Zap, X, MessageSquare, Trash2, Save, History, LogIn, LogOut, ArrowLeft, Check, Edit3, ChevronLeft, Plus, Sparkles, ClipboardList
+  Sun, Moon, Split, Columns2, Zap, X, MessageSquare, Trash2, Save, History, LogIn, LogOut, ArrowLeft, Check, Edit3, ChevronLeft, Plus, Sparkles
 } from 'lucide-react';
-import { 
-  getProject,
-  patchProject,
-  listAnalysisResults,
-  createAnalysisResult,
-  deleteAnalysisResult,
-  uploadImageBase64,
-  parseDataUrl,
-} from './lib/localApi';
+
 import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import ProjectManagement from './pages/ProjectManagement';
-import ReviewHistory from './components/ReviewHistory';
-import ReviewDetail from './components/ReviewDetail';
-import { ReviewRoundWithItems } from './types';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  onSnapshot, 
+  orderBy, 
+  deleteDoc, 
+  doc,
+  getDoc,
+  updateDoc,
+  setDoc
+} from './lib/localStorageService';
+import { 
+  ref, 
+  uploadString, 
+  getDownloadURL 
+} from './lib/localStorageStorage';
 
-const API_BASE = '';
 
 interface Difference {
   id: string;
@@ -128,17 +134,20 @@ const compressImage = (base64: string, maxWidth = 4096, quality = 0.95): Promise
   });
 };
 
-function DesignChecker() {
+function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  // Local dev mode: no login, treat as fully authorized.
-  const user = { uid: 'dev' };
+
+
   const [savedResults, setSavedResults] = useState<any[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved');
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [, setSaveStatusTick] = useState(0);
   const [showHistory, setShowHistory] = useState(false);
 
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const theme = resolvedTheme;
+
   const [comparisonMode, setComparisonMode] = useState<'overlay' | 'slider' | 'split' | 'diff'>('split');
   const [sliderPosition, setSliderPosition] = useState(50);
   const [isResizingSlider, setIsResizingSlider] = useState(false);
@@ -164,8 +173,7 @@ function DesignChecker() {
   const [showCrosshair, setShowCrosshair] = useState(false);
   const [crosshairPos, setCrosshairPos] = useState({ x: 0, y: 0 });
   const [differences, setDifferences] = useState<Difference[]>([]);
-  // Default to Gemini for best visual analysis quality.
-  const [selectedModel, setSelectedModel] = useState<'gemini' | 'kimi' | 'doubao' | 'qwen' | 'claude' | 'gpt'>('gemini');
+  const [selectedModel, setSelectedModel] = useState<'gemini' | 'kimi' | 'doubao'>('gemini');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedDiffId, setSelectedDiffId] = useState<string | null>(null);
   const [editingDiffId, setEditingDiffId] = useState<string | null>(null);
@@ -176,22 +184,96 @@ function DesignChecker() {
   const [newDiffStart, setNewDiffStart] = useState<{ x: number, y: number } | null>(null);
   const [inlineEdit, setInlineEdit] = useState<{ id: string, field: 'title' | 'description' | 'type' } | null>(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
+
   const [saveName, setSaveName] = useState('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [roundDeleteConfirmId, setRoundDeleteConfirmId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [projectName, setProjectName] = useState('Untitled Project');
   const [isOwner, setIsOwner] = useState(false);
   const [isEditingName, setIsEditingName] = useState(false);
+  const [rounds, setRounds] = useState<any[]>([]);
+  const [currentRoundId, setCurrentRoundId] = useState<string | null>(null);
+  const [isCreatingRound, setIsCreatingRound] = useState(false);
+  const [showRoundsPanel, setShowRoundsPanel] = useState(false);
+  const [roundsPanelHeight, setRoundsPanelHeight] = useState(150);
+  const [isResizingRoundsPanel, setIsResizingRoundsPanel] = useState(false);
   const [tempName, setTempName] = useState('');
-  const [sidebarTab, setSidebarTab] = useState<'differences' | 'review'>('differences');
-  const [selectedReviewRound, setSelectedReviewRound] = useState<ReviewRoundWithItems | null>(null);
   const skipNextAutoSave = React.useRef(false);
+  const skipNextRoundAutoSave = React.useRef(false);
   const lastSavedDataRef = React.useRef<string>('');
+  const lastSavedRoundDataRef = React.useRef<string>('');
   const isSavingRef = React.useRef(false);
+  const isSavingRoundRef = React.useRef(false);
   const currentImageRef = React.useRef<string | null>(null);
   const currentLiveImageRef = React.useRef<string | null>(null);
-  const analysisControllerRef = React.useRef<AbortController | null>(null);
+
+  const buildSaveFingerprint = () => JSON.stringify({
+    image,
+    liveImage,
+    differences,
+    url,
+    figmaUrl,
+    opacity,
+    scale,
+    position,
+    projectName
+  });
+
+  const buildRoundPayload = () => ({
+    designImage: image,
+    buildImage: liveImage,
+    differences,
+    updatedAt: Date.now()
+  });
+
+  const buildRoundFingerprint = () => JSON.stringify({
+    designImage: image,
+    buildImage: liveImage,
+    differences
+  });
+
+  const hasPendingChanges = saveStatus === 'saving' || saveStatus === 'unsaved';
+
+  const getLeaveWarningMessage = () => {
+    if (saveStatus === 'saving') {
+      return 'Project changes are still saving. Leave this page anyway?';
+    }
+
+    if (saveStatus === 'unsaved') {
+      return 'This project has unsaved changes. Leave this page anyway?';
+    }
+
+    return '';
+  };
+
+  const handleBackToProjects = () => {
+    if (hasPendingChanges && !window.confirm(getLeaveWarningMessage())) {
+      return;
+    }
+
+    navigate('/');
+  };
+
+  const formatSaveTime = (timestamp: number | null) => {
+    if (!timestamp) return 'Not saved yet';
+
+    const diffMs = Date.now() - timestamp;
+    const diffSeconds = Math.max(0, Math.floor(diffMs / 1000));
+
+    if (diffSeconds < 5) return 'Saved just now';
+    if (diffSeconds < 60) return `Saved ${diffSeconds}s ago`;
+
+    const diffMinutes = Math.floor(diffSeconds / 60);
+    if (diffMinutes < 60) return `Saved ${diffMinutes}m ago`;
+
+    return `Saved ${new Date(timestamp).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    })}`;
+  };
 
   // Use refs for values that change frequently to optimize event listeners
   const positionRef = React.useRef(position);
@@ -222,54 +304,326 @@ function DesignChecker() {
   useEffect(() => { imageSizeRef.current = imageSize; }, [imageSize]);
   useEffect(() => { currentImageRef.current = image; }, [image]);
   useEffect(() => { currentLiveImageRef.current = liveImage; }, [liveImage]);
+  useEffect(() => {
+    if (!lastSavedAt || saveStatus !== 'saved') return;
+
+    const interval = window.setInterval(() => {
+      setSaveStatusTick((prev) => prev + 1);
+    }, 15000);
+
+    return () => window.clearInterval(interval);
+  }, [lastSavedAt, saveStatus]);
 
   useEffect(() => {
-    // Load history (analysisResults) once in local dev.
-    listAnalysisResults()
-      .then((results) => setSavedResults(results))
-      .catch((e) => console.error("Error fetching analysis results:", e));
-  }, []);
+    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasPendingChanges) return;
+
+      event.preventDefault();
+      event.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasPendingChanges]);
 
   useEffect(() => {
-    // Load project when visiting /checker/:projectId
-    const loadProject = async () => {
-      if (!projectId) {
-        setIsLoading(false);
-        setIsOwner(true);
-        return;
-      }
-
-      setIsLoading(true);
-      setIsOwner(true); // Local dev: always editable
-      try {
-        const data = await getProject(projectId);
-        if (data?.name) {
-          setProjectName(data.name);
-          setTempName(data.name);
-        }
-        if (data?.analysisData) {
-          const ad = data.analysisData;
-          if (ad.image) setImage(ad.image);
-          if (ad.liveImage) setLiveImage(ad.liveImage);
-          if (ad.differences) {
-            setDifferences(ad.differences);
-            skipNextAutoSave.current = true;
-          }
-          if (ad.url) setUrl(ad.url);
-          if (ad.figmaUrl) setFigmaUrl(ad.figmaUrl);
-          if (typeof ad.opacity === "number") setOpacity(ad.opacity);
-          if (typeof ad.scale === "number") setScale(ad.scale);
-          if (ad.position) setPosition(ad.position);
-        }
-      } catch (error) {
-        console.error("Error loading project:", error);
-      } finally {
-        setIsLoading(false);
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingRoundsPanel) return;
+      const newHeight = window.innerHeight - e.clientY;
+      if (newHeight >= 60 && newHeight <= 800) {
+        setRoundsPanelHeight(newHeight);
       }
     };
 
-    loadProject();
+    const handleMouseUp = () => {
+      setIsResizingRoundsPanel(false);
+      document.body.style.cursor = 'default';
+    };
+
+    if (isResizingRoundsPanel) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'row-resize';
+    }
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingRoundsPanel]);
+
+  useEffect(() => {
+    const q = query(
+      collection('analysisResults'),
+      orderBy('timestamp', 'desc')
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const results = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setSavedResults(results);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (projectId) {
+      const loadProject = async () => {
+        setIsLoading(true);
+        try {
+          const docSnap = await getDoc(doc('projects', projectId));
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setIsOwner(true);
+            if (data.name) {
+              setProjectName(data.name);
+              setTempName(data.name);
+            }
+            if (data.analysisData) {
+              const ad = data.analysisData;
+              if (ad.image) setImage(ad.image);
+              if (ad.liveImage) setLiveImage(ad.liveImage);
+              if (ad.differences) {
+                setDifferences(ad.differences);
+                skipNextAutoSave.current = true;
+              }
+              if (ad.url) setUrl(ad.url);
+              if (ad.figmaUrl) setFigmaUrl(ad.figmaUrl);
+              if (ad.opacity) setOpacity(ad.opacity);
+              if (ad.scale) setScale(ad.scale);
+              if (ad.position) setPosition(ad.position);
+            }
+            const loadedFingerprint = JSON.stringify({
+              image: data.analysisData?.image ?? null,
+              liveImage: data.analysisData?.liveImage ?? null,
+              differences: data.analysisData?.differences ?? [],
+              url: data.analysisData?.url ?? '',
+              figmaUrl: data.analysisData?.figmaUrl ?? '',
+              opacity: data.analysisData?.opacity ?? 0.5,
+              scale: data.analysisData?.scale ?? 1,
+              position: data.analysisData?.position ?? { x: 0, y: 0 },
+              projectName: data.name ?? 'Untitled Project'
+            });
+            lastSavedDataRef.current = loadedFingerprint;
+            setLastSavedAt(data.updatedAt ?? data.analysisData?.timestamp ?? null);
+            setSaveStatus('saved');
+          }
+        } catch (error) {
+          console.error("Error loading project:", error);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      loadProject();
+    } else {
+      setIsLoading(false);
+      setIsOwner(true);
+    }
   }, [projectId]);
+
+  useEffect(() => {
+    if (projectId) {
+      const q = query(
+        collection(`projects_${projectId}_rounds`),
+        orderBy('timestamp', 'desc')
+      );
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const fetchedRounds = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setRounds(fetchedRounds);
+      });
+      return () => unsubscribe();
+    } else {
+      setRounds([]);
+    }
+  }, [projectId]);
+
+  const createNewRound = async (notes: string = '') => {
+    if (!projectId || !isOwner) return;
+    setIsCreatingRound(true);
+    try {
+      const roundNumber = rounds.length + 1;
+      const timestamp = Date.now();
+      const roundData = {
+        projectId,
+        roundNumber,
+        status: 'Pending',
+        designImage: image,
+        buildImage: liveImage,
+        differences,
+        notes,
+        timestamp
+      };
+      const docRef = await addDoc(collection(`projects_${projectId}_rounds`), roundData);
+      const newRound = {
+        id: docRef.id,
+        ...roundData
+      };
+
+      setRounds((prev) => [newRound, ...prev.filter((round) => round.id !== newRound.id)]);
+      setShowRoundsPanel(true);
+      setToast({ message: `Round ${roundNumber} created successfully`, type: 'success' });
+      lastSavedRoundDataRef.current = JSON.stringify({
+        designImage: roundData.designImage,
+        buildImage: roundData.buildImage,
+        differences: roundData.differences
+      });
+      setCurrentRoundId(docRef.id);
+    } catch (error) {
+      console.error("Error creating round:", error);
+      setToast({ message: "Failed to create round", type: 'error' });
+    } finally {
+      setIsCreatingRound(false);
+    }
+  };
+
+  const saveCurrentRoundData = async (roundId: string) => {
+    if (!projectId || !isOwner || !roundId || isSavingRoundRef.current) return;
+
+    const currentState = buildRoundFingerprint();
+    if (currentState === lastSavedRoundDataRef.current) {
+      return;
+    }
+
+    isSavingRoundRef.current = true;
+    const payload = buildRoundPayload();
+
+    setRounds((prev) =>
+      prev.map((round) =>
+        round.id === roundId
+          ? { ...round, ...payload }
+          : round
+      )
+    );
+
+    try {
+      await updateDoc(doc(`projects_${projectId}_rounds`, roundId), payload);
+      lastSavedRoundDataRef.current = currentState;
+    } catch (error) {
+      console.error("Error saving round data:", error);
+      setToast({ message: "Failed to save round changes", type: 'error' });
+    } finally {
+      isSavingRoundRef.current = false;
+    }
+  };
+
+  const loadRound = async (round: any) => {
+    if (currentRoundId && currentRoundId !== round.id) {
+      await saveCurrentRoundData(currentRoundId);
+    }
+
+    skipNextRoundAutoSave.current = true;
+    if (round.designImage) setImage(round.designImage);
+    if (round.buildImage) setLiveImage(round.buildImage);
+    if (round.differences) setDifferences(round.differences);
+    lastSavedRoundDataRef.current = JSON.stringify({
+      designImage: round.designImage ?? null,
+      buildImage: round.buildImage ?? null,
+      differences: round.differences ?? []
+    });
+    setCurrentRoundId(round.id);
+  };
+
+  const updateRoundStatus = async (roundId: string, newStatus: string) => {
+    if (!projectId || !isOwner) return;
+    setRounds((prev) =>
+      prev.map((round) =>
+        round.id === roundId
+          ? { ...round, status: newStatus, updatedAt: Date.now() }
+          : round
+      )
+    );
+
+    try {
+      await updateDoc(doc(`projects_${projectId}_rounds`, roundId), {
+        status: newStatus,
+        updatedAt: Date.now()
+      });
+      setToast({ message: `Round status updated to ${newStatus}`, type: 'success' });
+    } catch (error) {
+      console.error("Error updating round status:", error);
+      setToast({ message: "Failed to update status", type: 'error' });
+    }
+  };
+
+  const normalizeRoundNumbers = (items: any[]) => {
+    const sortedByTime = [...items].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    const roundNumberMap = new Map<string, number>();
+
+    sortedByTime.forEach((round, index) => {
+      roundNumberMap.set(round.id, index + 1);
+    });
+
+    return items.map((round) => ({
+      ...round,
+      roundNumber: roundNumberMap.get(round.id) ?? round.roundNumber
+    }));
+  };
+
+  const normalizeDifferenceIds = (items: Difference[]) => {
+    return items.map((diff, index) => ({
+      ...diff,
+      id: String(index + 1)
+    }));
+  };
+
+  const requestDeleteRound = (roundId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setRoundDeleteConfirmId(roundId);
+  };
+
+  const confirmDeleteRound = async () => {
+    if (!projectId || !isOwner || !roundDeleteConfirmId) return;
+
+    const roundIdToDelete = roundDeleteConfirmId;
+    const previousRounds = rounds;
+    const remainingRounds = normalizeRoundNumbers(
+      rounds.filter((round) => round.id !== roundIdToDelete)
+    );
+
+    setRoundDeleteConfirmId(null);
+    setRounds(remainingRounds);
+    if (currentRoundId === roundIdToDelete) {
+      setCurrentRoundId(null);
+    }
+
+    try {
+      await deleteDoc(doc(`projects_${projectId}_rounds`, roundIdToDelete));
+      await Promise.all(
+        remainingRounds.map((round) =>
+          updateDoc(doc(`projects_${projectId}_rounds`, round.id), {
+            roundNumber: round.roundNumber
+          })
+        )
+      );
+      setToast({ message: "Round deleted successfully", type: 'success' });
+    } catch (error) {
+      console.error("Error deleting round:", error);
+      setRounds(previousRounds);
+      setToast({ message: "Failed to delete round", type: 'error' });
+    }
+  };
+
+  const deleteDifference = (differenceId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!isOwner) return;
+    const nextDifferences = normalizeDifferenceIds(
+      differences.filter((diff) => diff.id !== differenceId)
+    );
+
+    setDifferences(nextDifferences);
+    if (selectedDiffId === differenceId) {
+      setSelectedDiffId(null);
+    }
+    if (inlineEdit?.id === differenceId) {
+      setInlineEdit(null);
+    }
+    setToast({ message: "Difference deleted", type: 'success' });
+  };
 
   const handleNameSave = () => {
     if (!tempName.trim()) return;
@@ -278,12 +632,10 @@ function DesignChecker() {
   };
 
   const saveProjectData = async () => {
-    if (!user || !projectId || !isOwner || isSavingRef.current) return;
+    if (!projectId || !isOwner || isSavingRef.current) return;
     
     // Create a fingerprint of current state to avoid redundant saves
-    const currentState = JSON.stringify({
-      image, liveImage, differences, url, figmaUrl, opacity, scale, position, projectName
-    });
+    const currentState = buildSaveFingerprint();
     
     if (currentState === lastSavedDataRef.current) {
       setSaveStatus('saved');
@@ -302,28 +654,18 @@ function DesignChecker() {
       let finalImageUrl = image;
       let finalLiveImageUrl = liveImage;
 
-      // Upload to local uploads folder if it's a data URL
+      // Upload to Firebase Storage if it's a base64 string
       if (image && image.startsWith('data:image')) {
-        const parsed = parseDataUrl(image);
-        if (parsed) {
-          finalImageUrl = await uploadImageBase64({
-            base64: parsed.base64,
-            mimeType: parsed.mimeType,
-            kind: 'design',
-          });
+          const imageRef = ref(null, `projects/${projectId}/design_${Date.now()}.jpg`);
+          await uploadString(imageRef, image, 'data_url');
+          finalImageUrl = await getDownloadURL(imageRef);
         }
-      }
 
-      if (liveImage && liveImage.startsWith('data:image')) {
-        const parsed = parseDataUrl(liveImage);
-        if (parsed) {
-          finalLiveImageUrl = await uploadImageBase64({
-            base64: parsed.base64,
-            mimeType: parsed.mimeType,
-            kind: 'build',
-          });
+        if (liveImage && liveImage.startsWith('data:image')) {
+          const liveImageRef = ref(null, `projects/${projectId}/build_${Date.now()}.jpg`);
+          await uploadString(liveImageRef, liveImage, 'data_url');
+          finalLiveImageUrl = await getDownloadURL(liveImageRef);
         }
-      }
 
       // Create a small thumbnail for the dashboard
       const thumbnail = finalImageUrl ? await compressImage(finalImageUrl, 400, 0.6) : (finalLiveImageUrl ? await compressImage(finalLiveImageUrl, 400, 0.6) : null);
@@ -340,11 +682,12 @@ function DesignChecker() {
         timestamp: Date.now()
       };
 
-      await patchProject(projectId, {
+      await setDoc(doc('projects', projectId), {
         name: projectName,
         analysisData,
-        thumbnail: thumbnail || 'https://picsum.photos/seed/' + projectId + '/400/300',
-      });
+        updatedAt: Date.now(),
+        thumbnail: thumbnail || 'https://picsum.photos/seed/' + projectId + '/400/300'
+      }, { merge: true });
       
       // Update local state with the new URLs ONLY if the user hasn't uploaded a newer image in the meantime
       if (currentImageRef.current === startingImage) {
@@ -362,6 +705,7 @@ function DesignChecker() {
       }
 
       lastSavedDataRef.current = currentState;
+      setLastSavedAt(Date.now());
       setSaveStatus('saved');
     } catch (error: any) {
       console.error("Error saving project data:", error);
@@ -388,9 +732,7 @@ function DesignChecker() {
     }
 
     // Don't trigger if data hasn't changed from last saved
-    const currentState = JSON.stringify({
-      image, liveImage, differences, url, figmaUrl, opacity, scale, position, projectName
-    });
+    const currentState = buildSaveFingerprint();
     if (currentState === lastSavedDataRef.current) return;
 
     setSaveStatus('unsaved');
@@ -400,7 +742,29 @@ function DesignChecker() {
     }, 2000); // Save after 2 seconds of inactivity
 
     return () => clearTimeout(timer);
-  }, [differences, opacity, scale, position, projectName, url, figmaUrl, image, liveImage, isOwner, isAnalyzing, isLoading, isSaving]);
+  }, [figmaUrl, image, isAnalyzing, isLoading, isOwner, isSaving, liveImage, differences, opacity, position, projectName, scale, url]);
+
+  useEffect(() => {
+    if (isLoading || !projectId || !isOwner || !currentRoundId) return;
+
+    if (skipNextRoundAutoSave.current) {
+      skipNextRoundAutoSave.current = false;
+      return;
+    }
+
+    if (isSavingRoundRef.current) return;
+
+    const currentState = buildRoundFingerprint();
+    if (currentState === lastSavedRoundDataRef.current) return;
+
+    const timer = setTimeout(() => {
+      saveCurrentRoundData(currentRoundId);
+    }, 800);
+
+    return () => clearTimeout(timer);
+  }, [currentRoundId, differences, image, isLoading, isOwner, liveImage, projectId]);
+
+
 
   // Sync liveStream to video element whenever it changes or video element mounts
   useEffect(() => {
@@ -409,22 +773,8 @@ function DesignChecker() {
     }
   }, [liveStream, videoRef.current]);
 
-  const stopAnalysis = () => {
-    if (analysisControllerRef.current) {
-      analysisControllerRef.current.abort();
-      analysisControllerRef.current = null;
-      setIsAnalyzing(false);
-      setError('Analysis stopped by user');
-    }
-  };
-
   const analyzeFidelity = async () => {
     if (!image || !liveImage || !isOwner) return;
-    
-    // Create new AbortController for this analysis
-    const controller = new AbortController();
-    analysisControllerRef.current = controller;
-    
     setIsAnalyzing(true);
     setDifferences([]);
     setSelectedDiffId(null);
@@ -439,17 +789,17 @@ function DesignChecker() {
           };
         }
         
-        // Prefer fetching directly in the browser.
-        // Some environments cannot reach external hosts from the dev server,
-        // but the browser can still fetch (Firebase Storage signed URLs).
+        const isLocalApi = url.startsWith('/api/');
         try {
-          const directResponse = await fetch(url, { mode: 'cors', signal: controller.signal });
-          if (!directResponse.ok) {
-            throw new Error(`Direct fetch failed (${directResponse.status}): ${directResponse.statusText}`);
+          const fetchUrl = isLocalApi ? url : `/api/proxy-image?url=${encodeURIComponent(url)}`;
+          console.log(`Fetching image ${isLocalApi ? 'directly' : 'via proxy'}: ${fetchUrl}`);
+          const response = await fetch(fetchUrl);
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Proxy failed (${response.status}): ${errorText || response.statusText}`);
           }
-
-          const blob = await directResponse.blob();
-          return await new Promise((resolve, reject) => {
+          const blob = await response.blob();
+          return new Promise((resolve, reject) => {
             const reader = new FileReader();
             reader.onloadend = () => {
               const base64 = (reader.result as string).split(',')[1];
@@ -458,29 +808,8 @@ function DesignChecker() {
             reader.onerror = reject;
             reader.readAsDataURL(blob);
           });
-        } catch (directErr: any) {
-          // Fallback to server proxy to bypass CORS when direct fetch is blocked.
-          try {
-            const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(url)}`;
-            console.log(`Direct fetch failed, falling back to proxy: ${proxyUrl}`);
-            const response = await fetch(proxyUrl, { signal: controller.signal });
-            if (!response.ok) {
-              const errorText = await response.text();
-              throw new Error(`Proxy failed (${response.status}): ${errorText || response.statusText}`);
-            }
-            const blob = await response.blob();
-            return await new Promise((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                const base64 = (reader.result as string).split(',')[1];
-                resolve({ data: base64, mimeType: blob.type });
-              };
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
-          } catch (proxyErr: any) {
-            throw new Error(`Failed to fetch image (direct + proxy): ${proxyErr?.message || proxyErr || directErr?.message}`);
-          }
+        } catch (e: any) {
+          throw new Error(`Failed to fetch image via proxy: ${e.message}`);
         }
       };
 
@@ -534,47 +863,125 @@ function DesignChecker() {
       `;
 
       let result;
-      // All models now use the backend API proxy
-      const response = await fetch("/api/analyze/ui", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          prompt,
-          designImg,
-          buildImg,
-          model: selectedModel
-        }),
-        signal: controller.signal
-      });
+      if (selectedModel === 'gemini') {
+        if (!process.env.GEMINI_API_KEY) {
+          throw new Error("Gemini API key is missing. Please ensure it is set in your environment variables.");
+        }
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+        const model = "gemini-3.1-pro-preview";
 
-      if (!response.ok) {
+        const response = await ai.models.generateContent({
+          model,
+          contents: [
+            {
+              parts: [
+                { text: prompt },
+                { inlineData: designImg },
+                { inlineData: buildImg }
+              ]
+            }
+          ],
+          config: {
+            responseMimeType: "application/json",
+            maxOutputTokens: 8192,
+            responseSchema: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  title: { type: Type.STRING },
+                  type: { type: Type.STRING, enum: ['CONTENT', 'LAYOUT', 'STYLE'] },
+                  description: { type: Type.STRING },
+                  rect: {
+                    type: Type.OBJECT,
+                    properties: {
+                      x: { type: Type.NUMBER },
+                      y: { type: Type.NUMBER },
+                      width: { type: Type.NUMBER },
+                      height: { type: Type.NUMBER }
+                    },
+                    required: ['x', 'y', 'width', 'height']
+                  }
+                },
+                required: ['title', 'type', 'description', 'rect']
+              }
+            }
+          }
+        });
+        result = JSON.parse(response.text || '[]');
+      } else {
+        // Call Kimi Proxy
+        const response = await fetch("/api/analyze/ui", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            prompt,
+            designImg,
+            buildImg,
+            model: selectedModel
+          })
+        });
+
+        if (!response.ok) {
+          const contentType = response.headers.get("content-type");
+          if (contentType && contentType.includes("application/json")) {
+            const errorData = await response.json();
+            throw new Error(errorData.error || "Kimi analysis failed");
+          } else {
+            const errorText = await response.text();
+            throw new Error(`Kimi analysis failed (${response.status}): ${errorText.substring(0, 100)}`);
+          }
+        }
+
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || `${selectedModel} analysis failed`);
+          result = await response.json();
         } else {
-          const errorText = await response.text();
-          throw new Error(`${selectedModel} analysis failed (${response.status}): ${errorText.substring(0, 100)}`);
+          const text = await response.text();
+          console.error(`Unexpected response format from backend (${response.status}):`, text.substring(0, 500));
+          throw new Error(`Unexpected response format from backend (${response.status}): Expected JSON but received ${contentType || "unknown"}. This often happens if the server is restarting or if the API route is not matched.`);
         }
       }
 
-      const contentType = response.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        result = await response.json();
-      } else {
-        const text = await response.text();
-        console.error(`Unexpected response format from backend (${response.status}):`, text.substring(0, 500));
-        throw new Error(`Unexpected response format from backend (${response.status}): Expected JSON but received ${contentType || "unknown"}. This often happens if the server is restarting or if the API route is not matched.`);
+      // 确保 result 是一个数组
+      if (!Array.isArray(result)) {
+        console.error("Expected array but got:", result);
+        result = [];
       }
-
+      
       const diffsWithIds = result.map((d: any, index: number) => {
+        // 确保 d 是一个对象
+        if (typeof d !== 'object' || d === null) {
+          console.error("Invalid difference object:", d);
+          return {
+            id: (index + 1).toString(),
+            title: "无效的差异数据",
+            type: "STYLE",
+            description: "AI 返回的数据格式不正确",
+            rect: { x: 10, y: 10, width: 100, height: 100 },
+            status: 'pending'
+          };
+        }
+        
         // Ensure type is valid and uppercase
         const type = (d.type || 'STYLE').toUpperCase();
         const validTypes = ['CONTENT', 'LAYOUT', 'STYLE'];
         
-        let rect = d.rect || { x: 0, y: 0, width: 0, height: 0 };
+        // Handle coordinate scaling
+        let rect = d.rect || { x: 0, y: 0, width: 100, height: 100 };
+        
+        // 确保 rect 是一个有效的对象
+        if (typeof rect !== 'object' || rect === null) {
+          rect = { x: 0, y: 0, width: 100, height: 100 };
+        }
+        
+        // 确保坐标值是数字
+        rect.x = typeof rect.x === 'number' ? rect.x : 0;
+        rect.y = typeof rect.y === 'number' ? rect.y : 0;
+        rect.width = typeof rect.width === 'number' ? rect.width : 100;
+        rect.height = typeof rect.height === 'number' ? rect.height : 100;
         
         // 1. First, handle potential normalization (0-1000 or 0-1)
         const isNormalized1000 = rect.x <= 1000 && rect.y <= 1000 && rect.width <= 1000 && rect.height <= 1000 && 
@@ -624,13 +1031,8 @@ function DesignChecker() {
       setDifferences(diffsWithIds);
     } catch (err: any) {
       console.error("Analysis error:", err);
-      if (err.name === 'AbortError') {
-        // Analysis was stopped by user, error is already set
-      } else {
-        setError(`Analysis error: ${err.message || 'Unknown error'}`);
-      }
+      setError(`Analysis error: ${err.message || 'Unknown error'}`);
     } finally {
-      analysisControllerRef.current = null;
       setIsAnalyzing(false);
     }
   };
@@ -654,43 +1056,17 @@ function DesignChecker() {
     if (!saveName.trim()) return;
     setIsSaving(true);
     try {
-      if (!image || !liveImage) throw new Error("Missing images to save");
-
-      let designImageUrl = image;
-      let buildImageUrl = liveImage;
-
-      if (image.startsWith('data:image')) {
-        const parsed = parseDataUrl(image);
-        if (parsed) {
-          designImageUrl = await uploadImageBase64({
-            base64: parsed.base64,
-            mimeType: parsed.mimeType,
-            kind: 'design',
-          });
-        }
-      }
-      if (liveImage.startsWith('data:image')) {
-        const parsed = parseDataUrl(liveImage);
-        if (parsed) {
-          buildImageUrl = await uploadImageBase64({
-            base64: parsed.base64,
-            mimeType: parsed.mimeType,
-            kind: 'build',
-          });
-        }
-      }
-
-      await createAnalysisResult({
+      await addDoc(collection('analysisResults'), {
         name: saveName,
-        designImage: designImageUrl,
-        buildImage: buildImageUrl,
+        designImage: image,
+        buildImage: liveImage,
         differences,
         url,
         figmaUrl,
         opacity,
         scale,
         position,
-        timestamp: Date.now(),
+        timestamp: Date.now()
       });
       setShowSaveModal(false);
       setToast({ message: "Analysis saved successfully!", type: 'success' });
@@ -702,13 +1078,7 @@ function DesignChecker() {
     }
   };
 
-  const handleLogin = async () => {
-    // Local dev: no login
-  };
 
-  const handleLogout = async () => {
-    // Local dev: no logout
-  };
 
   const loadResult = (result: any) => {
     setImage(result.designImage);
@@ -731,11 +1101,9 @@ function DesignChecker() {
   const confirmDeleteResult = async () => {
     if (!deleteConfirmId || !isOwner) return;
     try {
-      await deleteAnalysisResult(deleteConfirmId);
+      await deleteDoc(doc('analysisResults', deleteConfirmId));
       setDeleteConfirmId(null);
       setToast({ message: "Analysis deleted successfully!", type: 'success' });
-      const results = await listAnalysisResults();
-      setSavedResults(results);
     } catch (err) {
       console.error("Delete error:", err);
       setError("Failed to delete analysis result.");
@@ -929,8 +1297,7 @@ function DesignChecker() {
       }
 
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedDiffId && isOwner) {
-        setDifferences(prev => prev.filter(d => d.id !== selectedDiffId));
-        setSelectedDiffId(null);
+        deleteDifference(selectedDiffId);
       }
 
       if (e.key.toLowerCase() === 'r' && isOwner) {
@@ -1458,12 +1825,12 @@ function DesignChecker() {
       )}
       <div className={`flex flex-col w-screen h-screen overflow-hidden font-sans transition-colors duration-200 ${theme === 'dark' ? 'bg-[#121212] text-[#e0e0e0]' : 'bg-[#fafafa] text-[#1a1a1a]'}`}>
         {/* Top Header Bar */}
-        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-6 z-[150] transition-colors duration-200 ${
+        <header className={`h-16 shrink-0 border-b flex items-center justify-between px-6 z-[150] transition-colors duration-200 relative ${
           theme === 'dark' ? 'bg-[#1e1e1e] border-[#383838]' : 'bg-white border-gray-200 shadow-sm'
         }`}>
           <div className="flex items-center gap-1">
             <button 
-              onClick={() => navigate('/')}
+              onClick={handleBackToProjects}
               className={`p-1 rounded-xl transition-all flex items-center group ${
                 theme === 'dark' 
                   ? 'text-gray-400 hover:text-white hover:bg-[#2c2c2c]' 
@@ -1517,28 +1884,41 @@ function DesignChecker() {
               )}
               
               {/* Save Status Indicator */}
-              <div className="flex items-center gap-2 ml-2">
-                <div className={`w-1.5 h-1.5 rounded-full ${
+              <div className="flex items-center gap-2 ml-2 min-w-[132px]">
+                <div className={`w-1.5 h-1.5 rounded-full shrink-0 ${
                   saveStatus === 'saving' ? 'bg-amber-500 animate-pulse' :
                   saveStatus === 'saved' ? 'bg-emerald-500' :
                   saveStatus === 'unsaved' ? 'bg-gray-400' :
                   'bg-rose-500'
                 }`} />
-                <span className={`text-[10px] font-medium uppercase tracking-wider ${
-                  theme === 'dark' ? 'text-gray-500' : 'text-gray-400'
-                }`}>
-                  {saveStatus === 'saving' ? 'Saving...' :
-                   saveStatus === 'saved' ? 'Saved' :
-                   saveStatus === 'unsaved' ? 'Unsaved changes' :
-                   'Save error'}
-                </span>
+                <div className="flex flex-col leading-none">
+                  <span className={`text-[10px] font-medium uppercase tracking-wider ${
+                    theme === 'dark' ? 'text-gray-500' : 'text-gray-400'
+                  }`}>
+                    {saveStatus === 'saving' ? 'Saving...' :
+                     saveStatus === 'saved' ? 'All changes saved' :
+                     saveStatus === 'unsaved' ? 'Unsaved changes' :
+                     'Save error'}
+                  </span>
+                  <span className={`text-[10px] ${
+                    theme === 'dark' ? 'text-gray-600' : 'text-gray-400'
+                  }`}>
+                    {saveStatus === 'saved'
+                      ? formatSaveTime(lastSavedAt)
+                      : saveStatus === 'saving'
+                        ? 'Syncing project updates'
+                        : saveStatus === 'unsaved'
+                          ? 'Auto-save will run shortly'
+                          : 'Changes are not synced'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
-            {/* Comparison Modes in Header - Right Aligned */}
-            <div className={`flex items-center gap-1 p-1 rounded-2xl transition-colors duration-200 ${
+          {/* Centered Comparison Modes - Excluding Sidebar Width */}
+          <div className="absolute left-0 right-96 flex justify-center pointer-events-none">
+            <div className={`flex items-center gap-1 p-1 rounded-2xl transition-colors duration-200 pointer-events-auto ${
               theme === 'dark' ? 'bg-[#2c2c2c]' : 'bg-[#f0f0f5]'
             }`}>
               <button 
@@ -1582,25 +1962,60 @@ function DesignChecker() {
                 Diff
               </button>
             </div>
+          </div>
 
+          <div className="flex items-center gap-4">
             <div className="flex items-center gap-3">
               <button 
-                onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-                className={`p-2 rounded-xl transition-all ${
-                  theme === 'dark' ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-800'
+                onClick={() => setShowRoundsPanel(!showRoundsPanel)}
+                title="Rounds"
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  showRoundsPanel 
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' 
+                    : (theme === 'dark' ? 'bg-[#2c2c2c] text-gray-400 hover:text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200')
                 }`}
-                title={theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode'}
               >
-                {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
+                <History className="w-4 h-4" />
+                {rounds.length > 0 && (
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${
+                    showRoundsPanel ? 'bg-white/20' : 'bg-indigo-100 text-indigo-600'
+                  }`}>
+                    {rounds.length}
+                  </span>
+                )}
               </button>
+
+              {isOwner && (
+                <button 
+                  onClick={() => createNewRound()}
+                  disabled={isCreatingRound || !image || !liveImage || differences.length === 0}
+                  title={
+                    isCreatingRound 
+                      ? "Creating round..." 
+                      : !image || !liveImage 
+                        ? "Please upload a design and capture a snapshot first." 
+                        : differences.length === 0 
+                          ? "No differences to submit. Please mark or analyze differences first." 
+                          : "Submit round"
+                  }
+                  className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                    theme === 'dark' 
+                      ? 'bg-[#2c2c2c] text-gray-400 hover:text-white border border-white/5' 
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-200'
+                  }`}
+                >
+                  {isCreatingRound && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>Submit</span>
+                </button>
+              )}
             </div>
           </div>
         </header>
 
-        <div className="flex-1 flex overflow-hidden">
-
-        {/* Main Preview Area */}
-      <div id="preview-area" className="flex-1 relative overflow-hidden">
+        <div className="flex-1 flex overflow-hidden relative">
+          <div className="flex-1 flex flex-col overflow-hidden relative">
+            {/* Main Preview Area */}
+            <div id="preview-area" className="flex-1 relative overflow-hidden">
         <AnimatePresence>
           {isAddingDiff && isOwner && (
             <motion.div 
@@ -1874,102 +2289,120 @@ function DesignChecker() {
             </div>
             {/* Background Layer & Overlay Container */}
             <div className={`w-full h-full flex items-center justify-center overflow-auto relative ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-[#e5e5e5]'}`} style={{ isolation: 'isolate' }}>
-              {liveSourceType === 'url' && url ? (
-                <div className="w-full h-full relative">
-                  <iframe 
-                    src={url} 
-                    className="w-full h-full border-none bg-white"
-                    title="Live Website"
-                    style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}
-                  />
-                  {/* Iframe Warning Overlay */}
-                  {comparisonMode === 'diff' && (
-                    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-amber-500/90 text-white px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 shadow-lg backdrop-blur-sm">
-                      <Zap className="w-3 h-3" />
-                      Browser limitation: Iframe blending may be inaccurate
-                    </div>
-                  )}
-                </div>
-              ) : (liveSourceType === 'url' && !url) || (liveSourceType === 'image' && !liveImage) || (liveSourceType === 'sim' && !liveStream) ? (
-                <div className="relative z-50">
-                  {renderLiveSourceSelector()}
-                </div>
-              ) : null}
-
-              {liveSourceType === 'image' && liveImage && (
-                <div 
-                  className={`relative inline-block ${isAddingDiff && isOwner ? 'cursor-crosshair' : ''}`} 
-                  style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
-                  onMouseDown={handleMouseDown}
-                >
-                  <img 
-                    src={liveImage} 
-                    alt="Live Screenshot" 
-                    draggable={false}
-                    className={`max-h-none max-w-none rounded border ${theme === 'dark' ? 'border-white/5' : 'border-black/5'}`}
-                    style={{ width: '390px' }}
-                  />
-                </div>
-              )}
-
-              {liveSourceType === 'sim' && liveStream && (
-                <div 
-                  className={`relative inline-block ${isAddingDiff && isOwner ? 'cursor-crosshair' : ''}`} 
-                  style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
-                  onMouseDown={handleMouseDown}
-                >
-                  <video ref={videoRef} autoPlay playsInline className="max-w-none rounded border border-white/10" style={{ width: '390px' }} />
-                </div>
-              )}
-
-              {/* Overlay Layer */}
-              {image && isVisible && (
-                <div 
-                  className="absolute inset-0 flex items-center justify-center pointer-events-none z-10"
-                  style={{ 
-                    mixBlendMode: comparisonMode === 'diff' ? 'difference' : 'normal',
-                    opacity: comparisonMode === 'diff' ? 1 : opacity,
-                    filter: comparisonMode === 'diff' ? 'invert(1)' : 'none'
-                  }}
-                >
-                  <div 
-                    className="cursor-move origin-center pointer-events-auto"
-                    style={{
-                      transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
-                    }}
-                    onMouseDown={handleMouseDown}
-                  >
-                    <img 
-                      src={image} 
-                      alt="Design Overlay" 
-                      className="max-w-none pointer-events-none"
-                      style={{ width: '390px' }}
-                      draggable={false}
-                    />
+              {!image && !url && !liveImage && !(liveSourceType === 'sim' && liveStream) ? (
+                <div className="flex items-center justify-center gap-12 p-8 w-full h-full">
+                  <div className="flex-1 flex justify-center border-r border-indigo-500/20">
+                    {renderDesignSourceSelector()}
+                  </div>
+                  <div className="flex-1 flex justify-center">
+                    {renderLiveSourceSelector()}
                   </div>
                 </div>
-              )}
+              ) : (
+                <>
+                  {/* Design Selector if no image and build source is present */}
+                  {!image && ((liveSourceType === 'url' && url) || (liveSourceType === 'image' && liveImage) || (liveSourceType === 'sim' && liveStream)) && (
+                    <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/5 backdrop-blur-[2px]">
+                      {renderDesignSourceSelector()}
+                    </div>
+                  )}
 
-              {/* Marks Layer (Difference Boxes) - Always on top in Overlay mode */}
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[60]">
-                <div 
-                  className="relative inline-block" 
-                  style={{ 
-                    transform: `scale(${scale})`, 
-                    transformOrigin: 'center',
-                    width: liveSourceType === 'image' ? (liveImageSize.width || 'auto') : 'auto',
-                    height: liveSourceType === 'image' ? (liveImageSize.height || 'auto') : 'auto'
-                  }}
-                >
-                  {renderDifferenceBoxes('build')}
-                </div>
-              </div>
+                  {/* Live Source Selector if no build source and design is present */}
+                  {image && !url && !liveImage && !(liveSourceType === 'sim' && liveStream) && (
+                    <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/5 backdrop-blur-[2px]">
+                      {renderLiveSourceSelector()}
+                    </div>
+                  )}
 
-              {/* Design Selector if no image */}
-              {!image && ((liveSourceType === 'url' && url) || (liveSourceType === 'image' && liveImage) || (liveSourceType === 'sim' && liveStream)) && (
-                <div className="absolute inset-0 flex items-center justify-center z-50">
-                  {renderDesignSourceSelector()}
-                </div>
+                  {liveSourceType === 'url' && url && (
+                    <div className="w-full h-full relative">
+                      <iframe 
+                        src={url} 
+                        className="w-full h-full border-none bg-white"
+                        title="Live Website"
+                        style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}
+                      />
+                      {/* Iframe Warning Overlay */}
+                      {comparisonMode === 'diff' && (
+                        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-amber-500/90 text-white px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 shadow-lg backdrop-blur-sm">
+                          <Zap className="w-3 h-3" />
+                          Browser limitation: Iframe blending may be inaccurate
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {liveSourceType === 'image' && liveImage && (
+                    <div 
+                      className={`relative inline-block ${isAddingDiff && isOwner ? 'cursor-crosshair' : ''}`} 
+                      style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
+                      onMouseDown={handleMouseDown}
+                    >
+                      <img 
+                        src={liveImage} 
+                        alt="Live Screenshot" 
+                        draggable={false}
+                        className={`max-h-none max-w-none rounded border ${theme === 'dark' ? 'border-white/5' : 'border-black/5'}`}
+                        style={{ width: '390px' }}
+                      />
+                    </div>
+                  )}
+
+                  {liveSourceType === 'sim' && liveStream && (
+                    <div 
+                      className={`relative inline-block ${isAddingDiff && isOwner ? 'cursor-crosshair' : ''}`} 
+                      style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
+                      onMouseDown={handleMouseDown}
+                    >
+                      <video ref={videoRef} autoPlay playsInline className="max-w-none rounded border border-white/10" style={{ width: '390px' }} />
+                    </div>
+                  )}
+
+                  {/* Overlay Layer */}
+                  {image && isVisible && (
+                    <div 
+                      className="absolute inset-0 flex items-center justify-center pointer-events-none z-10"
+                      style={{ 
+                        mixBlendMode: comparisonMode === 'diff' ? 'difference' : 'normal',
+                        opacity: comparisonMode === 'diff' ? 1 : opacity,
+                        filter: comparisonMode === 'diff' ? 'invert(1)' : 'none'
+                      }}
+                    >
+                      <div 
+                        className="cursor-move origin-center pointer-events-auto"
+                        style={{
+                          transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
+                        }}
+                        onMouseDown={handleMouseDown}
+                      >
+                        <img 
+                          src={image} 
+                          alt="Design Overlay" 
+                          className="max-w-none pointer-events-none"
+                          style={{ width: '390px' }}
+                          draggable={false}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Marks Layer (Difference Boxes) - Always on top in Overlay mode */}
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-[60]">
+                    <div 
+                      className="relative inline-block" 
+                      style={{ 
+                        transform: `scale(${scale})`, 
+                        transformOrigin: 'center',
+                        width: liveSourceType === 'image' ? (liveImageSize.width || 'auto') : 'auto',
+                        height: liveSourceType === 'image' ? (liveImageSize.height || 'auto') : 'auto'
+                      }}
+                    >
+                      {renderDifferenceBoxes('build')}
+                    </div>
+                  </div>
+
+                  {/* Removed redundant selectors as they are now handled above */}
+                </>
               )}
             </div>
           </div>
@@ -1995,81 +2428,16 @@ function DesignChecker() {
           <div className="fixed inset-0 z-40 cursor-move" />
         )}
       </div>
-
-      {/* Sidebar (Control Panel) - Now on the Right */}
-      <div className={`w-96 h-full border-l flex flex-col z-50 overflow-hidden transition-colors duration-200 ${
+    </div>
+    <div className={`w-96 h-full border-l flex flex-col z-50 overflow-hidden transition-colors duration-200 ${
         theme === 'dark' 
           ? 'bg-[#1e1e1e] border-[#383838] text-[#e0e0e0]' 
           : 'bg-white border-[#e0e0e0] text-[#1a1a1a]'
       }`}>
-        {/* Tab Header */}
-        <div className={`flex border-b ${theme === 'dark' ? 'border-white/10' : 'border-black/5'}`}>
-          <button
-            onClick={() => setSidebarTab('differences')}
-            className={`flex-1 py-3 text-xs font-bold transition-colors flex items-center justify-center gap-2 ${
-              sidebarTab === 'differences'
-                ? 'text-indigo-500 border-b-2 border-indigo-500'
-                : theme === 'dark' ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            差异列表
-            {differences.length > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-400 text-[10px]">
-                {differences.filter(d => d.status === 'pending').length}
-              </span>
-            )}
-          </button>
-          <button
-            onClick={() => setSidebarTab('review')}
-            className={`flex-1 py-3 text-xs font-bold transition-colors flex items-center justify-center gap-2 ${
-              sidebarTab === 'review'
-                ? 'text-indigo-500 border-b-2 border-indigo-500'
-                : theme === 'dark' ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'
-            }`}
-          >
-            <ClipboardList className="w-3.5 h-3.5" />
-            验收历史
-          </button>
-        </div>
-
-        {/* Tab Content */}
-        {sidebarTab === 'review' ? (
-          selectedReviewRound ? (
-            <ReviewDetail
-              roundId={selectedReviewRound.id}
-              theme={theme}
-              onBack={() => setSelectedReviewRound(null)}
-              onRoundUpdate={() => {}}
-            />
-          ) : (
-            <ReviewHistory
-              projectId={projectId || ''}
-              theme={theme}
-              onSelectRound={(round) => setSelectedReviewRound(round)}
-              onNewRound={() => {
-                fetch(`${API_BASE}/api/projects/${projectId}/review-rounds`, {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    designImage: image,
-                    buildImage: liveImage
-                  })
-                })
-                  .then(res => res.json())
-                  .then(data => {
-                    if (data.id) {
-                      setToast({ message: `已创建第 ${data.roundNumber} 轮验收`, type: 'success' });
-                    }
-                  })
-                  .catch(e => console.error('Failed to create round:', e));
-              }}
-            />
-          )
-        ) : differences.length > 0 ? (
+        {differences.length > 0 ? (
           <div className="flex flex-col flex-1 overflow-hidden">
             <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'border-white/10' : 'border-black/5'}`}>
-              <h2 className="text-sm font-bold">差异列表</h2>
+              <h2 className="text-sm font-bold uppercase tracking-wider">Differences List</h2>
               <button 
                 onClick={() => {
                   setDifferences([]);
@@ -2169,6 +2537,19 @@ function DesignChecker() {
                               >
                                 {diff.type}
                               </button>
+                              {isOwner && (
+                                <button
+                                  onClick={(e) => deleteDifference(diff.id, e)}
+                                  className={`p-1 rounded-md transition-all ${
+                                    theme === 'dark'
+                                      ? 'text-gray-500 hover:text-rose-400 hover:bg-rose-500/10'
+                                      : 'text-gray-400 hover:text-rose-500 hover:bg-rose-50'
+                                  }`}
+                                  title="Delete difference"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              )}
                             </div>
                           </div>
                         )}
@@ -2271,13 +2652,22 @@ function DesignChecker() {
                           </span>
                         </div>
                         {isOwner && (
-                          <button 
-                            onClick={() => updateDiffStatus(diff.id, 'pending')}
-                            className="opacity-0 group-hover/resolved:opacity-100 p-1 hover:bg-white/10 rounded text-indigo-400 transition-all"
-                            title="恢复"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                          </button>
+                          <div className="flex items-center gap-1 opacity-0 group-hover/resolved:opacity-100 transition-all">
+                            <button 
+                              onClick={() => updateDiffStatus(diff.id, 'pending')}
+                              className="p-1 hover:bg-white/10 rounded text-indigo-400 transition-all"
+                              title="恢复"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                            </button>
+                            <button
+                              onClick={(e) => deleteDifference(diff.id, e)}
+                              className="p-1 hover:bg-rose-500/10 rounded text-rose-400 transition-all"
+                              title="Delete difference"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
                         )}
                       </div>
                     ))}
@@ -2288,25 +2678,25 @@ function DesignChecker() {
               <div className="mt-8 pt-6 border-t border-white/5 text-center px-4 pb-4">
                 <p className={`text-[10px] leading-relaxed ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>
                   本回答由 AI（{
-                    selectedModel === 'gemini' ? 'Gemini 2.0 Flash' : 
-                    selectedModel === 'kimi' ? 'Kimi Vision' : 
-                    selectedModel === 'qwen' ? 'Qwen VL Max' : 
-                    selectedModel === 'claude' ? 'Claude Sonnet 4' : 
-                    selectedModel === 'gpt' ? 'GPT-4o' : 'Doubao'
+                    selectedModel === 'gemini' ? 'Gemini' : 
+                    selectedModel === 'kimi' ? 'Kimi' : 'Doubao'
                   }）生成，内容仅供参考
                 </p>
               </div>
             </div>
           </div>
         ) : (
-          <div className="flex flex-col flex-1 overflow-hidden">
-            <div className="flex-1 overflow-y-auto p-4">
+          <>
+            <div className="flex flex-col flex-1 overflow-hidden">
+              <div className="flex-1 overflow-y-auto p-4">
               {isAnalyzing ? (
               <div className="flex flex-col items-center justify-center py-20 gap-4">
                 <Loader2 className="w-8 h-8 text-indigo-500 animate-spin" />
                 <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500">Analyzing Fidelity...</p>
               </div>
-            ) : showHistory ? (
+            ) : (
+              <>
+                {showHistory ? (
               <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-right-4">
                 <div className="flex items-center justify-between">
                   <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">Saved Analyses</h3>
@@ -2367,7 +2757,7 @@ function DesignChecker() {
                   </div>
                 )}
 
-                {image && isOwner && (
+                {image && isOwner ? (
                   <div className={`flex flex-col gap-6 pt-4 ${theme === 'dark' ? '' : ''}`}>
                     {/* Position & Alignment */}
                     <div className="flex flex-col gap-4">
@@ -2476,12 +2866,25 @@ function DesignChecker() {
                     </div>
                   </div>
                 </div>
-              )}
-            </>
-          )}
-        </div>
-        {isOwner && image && liveImage && (
-          <div className={`p-0 border-t shrink-0 ${theme === 'dark' ? 'bg-[#1e1e1e] border-white/10' : 'bg-white border-black/5'}`}>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-20 gap-4 text-center px-6">
+                    <div className="w-16 h-16 bg-indigo-500/10 rounded-full flex items-center justify-center mb-4">
+                      <Sparkles className="w-8 h-8 text-indigo-500" />
+                    </div>
+                    <h3 className="text-sm font-bold mb-2">Ready to Analyze</h3>
+                    <p className="text-xs text-gray-500 leading-relaxed">
+                      Upload your design and build screenshots to start the fidelity analysis.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+              </div>
+            </div>
+            {isOwner && image && liveImage && (
+      <div className={`p-0 border-t shrink-0 z-50 ${theme === 'dark' ? 'bg-[#1e1e1e] border-white/10' : 'bg-white border-black/5'}`}>
             <div className="flex items-center">
               <div className="w-1/4">
                 <select
@@ -2493,42 +2896,160 @@ function DesignChecker() {
                       : 'bg-gray-50 border-gray-200 text-gray-600 focus:border-indigo-500'
                   }`}
                 >
-                  <option value="gemini">Gemini 2.0 Flash</option>
-                  <option value="claude">Claude Sonnet 4</option>
-                  <option value="gpt">GPT-4o</option>
-                  <option value="qwen">Qwen VL Max</option>
-                  <option value="kimi">Kimi Vision</option>
+                  <option value="gemini">Gemini</option>
+                  <option value="kimi">Kimi</option>
                   <option value="doubao">Doubao</option>
                 </select>
               </div>
-              {isAnalyzing ? (
-                <button 
-                  onClick={stopAnalysis}
-                  className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white text-[12px] font-bold transition-all flex items-center justify-center gap-2"
-                >
-                  <X className="w-4 h-4" />
-                  <span>Stop Analysis</span>
-                </button>
-              ) : (
-                <button 
-                  onClick={() => analyzeFidelity()}
-                  disabled={!image || !liveImage}
-                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>{differences.length > 0 ? 'Re-generate Analysis' : 'Start Analysis'}</span>
-                </button>
-              )}
+              <button 
+                onClick={() => analyzeFidelity()}
+                disabled={isAnalyzing}
+                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isAnalyzing ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Analyzing...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4" />
+                    <span>{differences.length > 0 ? 'Re-generate Analysis' : 'Start Analysis'}</span>
+                  </>
+                )}
+              </button>
             </div>
           </div>
         )}
-      </div>
+      </>
     )}
-    </div>
   </div>
 </div>
 
-    {/* Auth Modal removed (local dev: no login) */}
+      {/* Rounds History Panel */}
+      <AnimatePresence>
+        {showRoundsPanel && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: roundsPanelHeight, opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={isResizingRoundsPanel ? { duration: 0 } : { type: 'spring', damping: 25, stiffness: 200 }}
+            className={`relative w-full z-[160] shadow-[0_-10px_30px_-15px_rgba(0,0,0,0.1)] flex flex-col overflow-hidden shrink-0 scrollbar-hide ${
+              theme === 'dark' ? 'bg-[#1e1e1e]' : 'bg-white'
+            }`}
+          >
+            {/* Resize Handle */}
+            <div 
+              onMouseDown={() => setIsResizingRoundsPanel(true)}
+              className="absolute top-0 left-0 right-0 h-1 cursor-row-resize hover:bg-indigo-500/50 transition-colors z-[170]"
+            />
+
+            <div className="flex-1 overflow-x-auto overflow-y-hidden p-4 flex gap-4 items-center scrollbar-hide">
+              {rounds.length === 0 ? (
+                <div className="flex items-center justify-center w-full text-center gap-4">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center ${theme === 'dark' ? 'bg-[#2c2c2c]' : 'bg-gray-50'}`}>
+                    <History className="w-5 h-5 text-gray-400" />
+                  </div>
+                  <div className="text-left">
+                    <p className={`text-sm font-medium ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>No verification rounds yet.</p>
+                    <p className="text-xs text-gray-500">Submit your first round to start tracking progress.</p>
+                  </div>
+                </div>
+              ) : (
+                rounds.map((round) => {
+                  // Calculate scale based on height
+                  // Base height is 150px, base card width is 240px
+                  const scaleFactor = roundsPanelHeight / 150;
+                  const cardWidth = 240 * scaleFactor;
+                  
+                  return (
+                    <div
+                      key={round.id}
+                      onClick={() => loadRound(round)}
+                      style={{ width: cardWidth }}
+                      className={`shrink-0 cursor-pointer text-left p-2 rounded-xl border transition-all group overflow-hidden ${
+                        currentRoundId === round.id
+                          ? 'border-indigo-500 bg-indigo-500/5 ring-1 ring-indigo-500'
+                          : (theme === 'dark' ? 'border-[#383838] bg-[#252525] hover:border-gray-600' : 'border-gray-100 bg-gray-50 hover:border-gray-300')
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className={`text-[9px] font-bold uppercase tracking-tighter whitespace-nowrap px-1.5 py-0.5 rounded-full shrink-0 ${
+                            currentRoundId === round.id ? 'bg-indigo-500 text-white' : (theme === 'dark' ? 'bg-[#383838] text-gray-400' : 'bg-white text-gray-500 border border-gray-200')
+                          }`}>
+                            Round {round.roundNumber}
+                          </span>
+                          <span className="text-[8px] text-gray-500 truncate hidden sm:inline">
+                            {new Date(round.timestamp).toLocaleDateString()}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {isOwner && (
+                            <button
+                              onClick={(e) => requestDeleteRound(round.id, e)}
+                              className={`p-1 rounded-md transition-all ${
+                                theme === 'dark'
+                                  ? 'text-gray-500 hover:text-rose-400 hover:bg-rose-500/10'
+                                  : 'text-gray-400 hover:text-rose-500 hover:bg-rose-50'
+                              }`}
+                              title="Delete round"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
+                          {['Pending', 'Verified', 'Rejected'].map((status) => (
+                            <button
+                              key={status}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                updateRoundStatus(round.id, status);
+                              }}
+                              className={`px-1.5 py-0.5 rounded-full text-[8px] font-bold uppercase transition-all ${
+                                round.status === status
+                                  ? (status === 'Verified' ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : status === 'Rejected' ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/20' : 'bg-amber-500 text-white shadow-lg shadow-amber-500/20')
+                                  : (theme === 'dark' ? 'bg-[#383838] text-gray-500 hover:text-gray-300' : 'bg-white text-gray-400 border border-gray-200 hover:border-gray-300')
+                              }`}
+                            >
+                              {status.charAt(0)}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      
+                      <div className="flex gap-2 mb-2">
+                        <div className="flex-1 aspect-video rounded-lg bg-black/5 overflow-hidden border border-black/5">
+                          <img src={round.designImage} alt="Design" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        </div>
+                        <div className="flex-1 aspect-video rounded-lg bg-black/5 overflow-hidden border border-black/5">
+                          <img src={round.buildImage} alt="Build" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5">
+                          <MessageSquare className="w-3 h-3 text-gray-400" />
+                          <span className="text-[10px] text-gray-500">{round.differences?.length || 0} Issues</span>
+                        </div>
+                        <div className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                          round.status === 'Verified' ? 'text-emerald-500' :
+                          round.status === 'Rejected' ? 'text-rose-500' :
+                          'text-amber-500'
+                        }`}>
+                          {round.status}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+    {/* Auth Modal */}
+
 
     {/* Save Analysis Modal */}
     <AnimatePresence>
@@ -2575,6 +3096,43 @@ function DesignChecker() {
                 className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/20 disabled:opacity-50"
               >
                 {isSaving ? 'Saving...' : 'Save Analysis'}
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+
+    <AnimatePresence>
+      {roundDeleteConfirmId && (
+        <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden border border-gray-200 dark:border-white/10"
+          >
+            <div className="p-6 text-center">
+              <div className="w-16 h-16 bg-rose-50 dark:bg-rose-500/10 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Trash2 className="w-8 h-8" />
+              </div>
+              <h2 className="text-xl font-bold mb-2 dark:text-white">Delete Round?</h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                This action cannot be undone. The saved round and its review snapshot will be permanently removed.
+              </p>
+            </div>
+            <div className="p-4 bg-gray-50 dark:bg-white/5 flex gap-3">
+              <button
+                onClick={() => setRoundDeleteConfirmId(null)}
+                className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-white/10 rounded-xl transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeleteRound}
+                className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-rose-500 hover:bg-rose-600 rounded-xl transition-colors shadow-lg shadow-rose-500/20"
+              >
+                Delete
               </button>
             </div>
           </motion.div>
@@ -2639,17 +3197,50 @@ function DesignChecker() {
         </motion.div>
       )}
     </AnimatePresence>
+    </div>
     </>
   );
 }
 
 export default function App() {
+  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>(() => {
+    return (localStorage.getItem('theme') as 'light' | 'dark' | 'system') || 'system';
+  });
+
+  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>(() => {
+    if (theme === 'system') {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    return theme as 'light' | 'dark';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('theme', theme);
+    if (theme === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const handler = (e: MediaQueryListEvent) => setResolvedTheme(e.matches ? 'dark' : 'light');
+      setResolvedTheme(mediaQuery.matches ? 'dark' : 'light');
+      mediaQuery.addEventListener('change', handler);
+      return () => mediaQuery.removeEventListener('change', handler);
+    } else {
+      setResolvedTheme(theme as 'light' | 'dark');
+    }
+  }, [theme]);
+
+  useEffect(() => {
+    if (resolvedTheme === 'dark') {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [resolvedTheme]);
+
   return (
     <>
       <Routes>
-        <Route path="/" element={<ProjectManagement />} />
-        <Route path="/checker" element={<DesignChecker />} />
-        <Route path="/checker/:projectId" element={<DesignChecker />} />
+        <Route path="/" element={<ProjectManagement theme={theme} setTheme={setTheme} resolvedTheme={resolvedTheme} />} />
+        <Route path="/checker" element={<DesignChecker resolvedTheme={resolvedTheme} />} />
+        <Route path="/checker/:projectId" element={<DesignChecker resolvedTheme={resolvedTheme} />} />
       </Routes>
     </>
   );

@@ -13,9 +13,6 @@ import {
   LayoutGrid,
   LayoutList,
   Bell,
-  User as UserIcon,
-  LogOut,
-  LogIn,
   X,
   Settings,
   Moon,
@@ -23,21 +20,12 @@ import {
   Monitor,
   ChevronRight,
   Check,
-  UserCircle,
   Edit2,
   GripVertical
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'motion/react';
-import { 
-  listProjects, 
-  listCategories,
-  createProject,
-  patchProject,
-  createCategory,
-  patchCategory,
-  deleteCategory,
-} from '../lib/localApi';
+import { motion, AnimatePresence, Reorder } from 'motion/react';
+import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc, updateDoc, setDoc, writeBatch } from '../lib/localStorageService';
 
 interface Project {
   id: string;
@@ -46,14 +34,16 @@ interface Project {
   updatedAt: any;
   isStarred: boolean;
   category: string;
-  members?: string[];
-  userId?: string;
+  members: string[];
+  userId: string;
 }
 
 interface Category {
   id: string;
   name: string;
-  userId?: string;
+  userId: string;
+  order?: number;
+  createdAt?: any;
   isEditing?: boolean;
 }
 
@@ -88,11 +78,8 @@ const formatRelativeDate = (timestamp: number | any) => {
   }).replace(/\//g, '-');
 };
 
-export default function ProjectManagement() {
+export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { theme: 'light' | 'dark' | 'system', setTheme: (theme: 'light' | 'dark' | 'system') => void, resolvedTheme: 'light' | 'dark' }) {
   const navigate = useNavigate();
-  // Local dev: no login required.
-  const user = { uid: 'dev', displayName: 'Local Dev', photoURL: undefined as string | undefined, email: 'dev@local' };
-  const userProfile = { displayName: 'Local Dev', role: '' };
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('Last modified');
@@ -114,22 +101,19 @@ export default function ProjectManagement() {
   const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
   const [hoveredCategoryId, setHoveredCategoryId] = useState<string | null>(null);
-  const [draggedCategoryId, setDraggedCategoryId] = useState<string | null>(null);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editCategoryName, setEditCategoryName] = useState('');
-  const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showThemeSubmenu, setShowThemeSubmenu] = useState(false);
-  const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('system');
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, categoryId: string } | null>(null);
+
+  // Use resolvedTheme for styling
+  const isDark = resolvedTheme === 'dark';
 
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      if (!target.closest('.user-profile-trigger') && !target.closest('.user-dropdown-menu')) {
-        setShowUserDropdown(false);
-        setShowThemeSubmenu(false);
-      }
+      setShowThemeSubmenu(false);
       if (!target.closest('.context-menu')) {
         setContextMenu(null);
       }
@@ -138,23 +122,46 @@ export default function ProjectManagement() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const reload = async () => {
-    setIsLoading(true);
-    try {
-      const [projs, cats] = await Promise.all([listProjects(), listCategories()]);
-      setProjects(projs as any);
-      setCategories(cats as any);
-    } catch (e) {
-      console.error("Reload projects/categories failed:", e);
-      setProjects([]);
-      setCategories([]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
-    reload().catch((e) => console.error("Initial load failed:", e));
+    // Fetch Projects
+    const qProjects = query(
+      collection('projects'),
+      orderBy('updatedAt', 'desc')
+    );
+    const unsubscribeProjects = onSnapshot(qProjects, (snapshot) => {
+      const projs = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Project[];
+      setProjects(projs);
+      setIsLoading(false);
+    });
+
+    // Fetch Categories
+    const qCategories = query(
+      collection('categories')
+    );
+    const unsubscribeCategories = onSnapshot(qCategories, (snapshot) => {
+      const cats = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      })) as Category[];
+      // Sort by order, then by createdAt
+      cats.sort((a, b) => {
+        const orderA = a.order ?? 0;
+        const orderB = b.order ?? 0;
+        if (orderA !== orderB) return orderA - orderB;
+        const timeA = a.createdAt ?? 0;
+        const timeB = b.createdAt ?? 0;
+        return timeA - timeB;
+      });
+      setCategories(cats);
+    });
+
+    return () => {
+      unsubscribeProjects();
+      unsubscribeCategories();
+    };
   }, []);
 
   const filteredProjects = projects.filter(p => {
@@ -173,18 +180,21 @@ export default function ProjectManagement() {
     if (!newProjectName.trim()) return;
 
     try {
+      const projectId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+
+      // Navigate immediately
       setShowCreateModal(false);
-      const { id: projectId } = await createProject({
+      navigate(`/checker/${projectId}`);
+
+      // Perform the write in the background
+      await setDoc(doc('projects', projectId), {
         name: newProjectName,
         updatedAt: Date.now(),
         thumbnail: 'https://picsum.photos/seed/' + Math.random() + '/400/300',
         isStarred: false,
         category: 'All projects',
-        members: [user.uid],
+        members: []
       });
-
-      await reload();
-      navigate(`/checker/${projectId}`);
     } catch (error) {
       console.error("Error creating project:", error);
     }
@@ -201,8 +211,7 @@ export default function ProjectManagement() {
     // Close modal immediately for better UX
     setIsDeletingId(null);
     try {
-      await patchProject(idToTrash, { category: 'Trash' });
-      await reload();
+      await updateDoc(doc('projects', idToTrash), { category: 'Trash' });
     } catch (error) {
       console.error("Error moving project to trash:", error);
     }
@@ -211,31 +220,51 @@ export default function ProjectManagement() {
   const toggleStar = async (id: string, current: boolean, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await patchProject(id, { isStarred: !current });
-      await reload();
+      await updateDoc(doc('projects', id), {
+        isStarred: !current
+      });
     } catch (error) {
       console.error("Error starring project:", error);
     }
   };
 
   const handleCreateCategory = async () => {
-    if (!user?.uid) return;
     try {
-      const res = await createCategory('New Category');
-      setEditingCategoryId(res.id);
+      const docRef = await addDoc(collection('categories'), {
+        name: 'New Category',
+        createdAt: serverTimestamp(),
+        order: categories.length
+      });
+      setEditingCategoryId(docRef.id);
       setEditCategoryName('New Category');
-      await reload();
     } catch (error) {
       console.error("Error creating category:", error);
+    }
+  };
+
+  const handleReorderCategories = async (newOrder: Category[]) => {
+    // Optimistic update
+    setCategories(newOrder);
+    
+    try {
+      const batch = await writeBatch();
+      newOrder.forEach((cat, index) => {
+        batch.update('categories', cat.id, { order: index });
+      });
+      await batch.commit();
+    } catch (error) {
+      console.error("Error reordering categories:", error);
+      addToast("Failed to reorder categories");
     }
   };
 
   const handleSaveCategory = async (id: string) => {
     if (!editCategoryName.trim()) return;
     try {
-      await patchCategory(id, { name: editCategoryName });
+      await updateDoc(doc('categories', id), {
+        name: editCategoryName
+      });
       setEditingCategoryId(null);
-      await reload();
     } catch (error) {
       console.error("Error saving category:", error);
     }
@@ -243,7 +272,7 @@ export default function ProjectManagement() {
 
   const handleDeleteCategory = async (id: string) => {
     try {
-      await deleteCategory(id);
+      await deleteDoc(doc('categories', id));
       if (activeCategory === id) {
         setActiveCategory('All projects');
       }
@@ -252,32 +281,7 @@ export default function ProjectManagement() {
       console.error("Error deleting category:", error);
       addToast("Failed to delete category");
     }
-    await reload();
     setContextMenu(null);
-  };
-
-  const handleReorderCategories = async (newOrder: string[]) => {
-    try {
-      // 这里可以实现分类排序的持久化
-      // 目前只更新前端状态
-      // 使用新的排序顺序重新构建分类列表
-      const allCategories = [...categories];
-      const reorderedCategories = newOrder.map(id => 
-        allCategories.find(cat => cat.id === id)
-      ).filter(Boolean) as Category[];
-      
-      // 确保所有分类都被包含
-      const remainingCategories = allCategories.filter(cat => 
-        !reorderedCategories.some(c => c.id === cat.id)
-      );
-      
-      const finalOrder = [...reorderedCategories, ...remainingCategories];
-      setCategories(finalOrder);
-      
-      console.log('Categories reordered:', finalOrder.map(c => c.name));
-    } catch (error) {
-      console.error("Error reordering categories:", error);
-    }
   };
 
   const handleContextMenu = (e: React.MouseEvent, categoryId: string) => {
@@ -298,169 +302,37 @@ export default function ProjectManagement() {
       // Interaction-first: Show toast immediately
       addToast(`Moved project to ${catName}`);
 
-      // Update local backend in the background
-      patchProject(draggedProjectId, { category: hoveredCategoryId })
-        .catch(error => {
-          console.error("Error updating project category:", error);
-          addToast("Failed to move project");
-        })
-        .finally(() => reload());
+      // Update local storage in the background
+      updateDoc(doc('projects', draggedProjectId), {
+        category: hoveredCategoryId
+      }).catch(error => {
+        console.error("Error updating project category:", error);
+        addToast("Failed to move project");
+      });
     }
     setDraggedProjectId(null);
     setHoveredCategoryId(null);
   };
 
   return (
-    <div className={`flex h-screen transition-colors duration-200 font-sans ${theme === 'dark' ? 'bg-[#121212] text-[#e0e0e0]' : 'bg-[#fafafa] text-[#1a1a1a]'}`}>
+    <div className={`flex h-screen transition-colors duration-200 font-sans ${isDark ? 'bg-[#121212] text-[#e0e0e0]' : 'bg-[#fafafa] text-[#1a1a1a]'}`}>
       {/* Sidebar */}
-      <aside className={`min-w-[16rem] w-fit max-w-xs border-r flex flex-col p-4 relative z-50 transition-colors duration-200 ${theme === 'dark' ? 'bg-[#1e1e1e] border-[#383838]' : 'bg-white border-gray-200'}`}>
+      <aside className={`min-w-[16rem] w-fit max-w-xs border-r flex flex-col p-4 relative z-50 transition-colors duration-200 ${isDark ? 'bg-[#1e1e1e] border-[#383838]' : 'bg-white border-gray-200'}`}>
         <div className="flex items-center justify-between mb-8 relative">
-          <div 
-            className={`user-profile-trigger flex items-center gap-2 cursor-pointer p-1.5 -ml-1.5 rounded-xl transition-colors min-w-0 ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-gray-50'}`}
-            onClick={() => setShowUserDropdown(!showUserDropdown)}
-          >
-            <div className="w-8 h-8 rounded-full bg-gray-200 overflow-hidden shrink-0">
-              {user?.photoURL ? (
-                <img src={user.photoURL} alt="User" className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-indigo-100 text-indigo-600">
-                  <UserIcon className="w-4 h-4" />
-                </div>
-              )}
-            </div>
-            <div className="flex flex-col min-w-0">
-              <span className="font-medium text-sm whitespace-nowrap">
-                {userProfile.displayName || user?.displayName || (user ? 'User' : 'Guest')}
-              </span>
-              {userProfile.role && (
-                <span className="text-xs text-gray-500 whitespace-nowrap">
-                  {userProfile.role}
-                </span>
-              )}
-            </div>
-            <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showUserDropdown ? 'rotate-180' : ''}`} />
-          </div>
-
-          <AnimatePresence>
-            {showUserDropdown && (
-              <motion.div
-                initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                className="user-dropdown-menu absolute top-full left-0 mt-2 w-full min-w-[200px] bg-[#1e1e1e] text-white rounded-2xl shadow-2xl border border-white/10 z-[100]"
-              >
-                {/* User Info Section */}
-                <div className="p-4 flex flex-col items-center text-center border-b border-white/5">
-                  <div className="relative mb-3">
-                    <div className="w-16 h-16 rounded-full bg-gray-700 overflow-hidden ring-4 ring-white/5">
-                      {user?.photoURL ? (
-                        <img src={user.photoURL} alt="User" className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center bg-indigo-500/20 text-indigo-400">
-                          <UserIcon className="w-8 h-8" />
-                        </div>
-                      )}
-                    </div>
-                    <button className="absolute bottom-0 right-0 w-6 h-6 bg-[#2c2c2c] border border-white/10 rounded-full flex items-center justify-center hover:bg-[#383838] transition-colors shadow-lg">
-                      <Edit2 className="w-3 h-3 text-white" />
-                    </button>
-                  </div>
-                  <h3 className="font-bold text-base mb-0.5">
-                    {userProfile.displayName || user?.displayName || (user ? 'User' : 'Guest')}
-                  </h3>
-                  <p className="text-xs text-gray-500 truncate w-full">
-                    {user?.email || 'No email provided'}
-                  </p>
-                </div>
-
-                {/* Menu Items */}
-                <div className="p-1.5 space-y-0.5">
-                  <>
-                    <div className="relative">
-                      <button 
-                        onClick={() => setShowThemeSubmenu(!showThemeSubmenu)}
-                        className={`w-full flex items-center justify-between px-3 py-2 rounded-xl transition-colors ${showThemeSubmenu ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-gray-300'}`}
-                      >
-                        <div className="flex items-center gap-2.5">
-                          <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${showThemeSubmenu ? 'bg-white/20' : 'bg-white/5'}`}>
-                            <Monitor className="w-3.5 h-3.5" />
-                          </div>
-                          <span className="font-medium text-sm">主题</span>
-                        </div>
-                        <ChevronRight className={`w-3.5 h-3.5 transition-transform ${showThemeSubmenu ? 'rotate-90' : ''}`} />
-                      </button>
-
-                      <AnimatePresence>
-                        {showThemeSubmenu && (
-                          <motion.div
-                            initial={{ opacity: 0, x: 10 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            exit={{ opacity: 0, x: 10 }}
-                            className="user-dropdown-menu absolute left-full top-0 ml-2 w-40 bg-[#2c2c2c] border border-white/10 rounded-2xl shadow-2xl p-1.5 z-[110]"
-                          >
-                            {[
-                              { id: 'light', icon: <Sun className="w-3.5 h-3.5" />, label: '明亮模式' },
-                              { id: 'dark', icon: <Moon className="w-3.5 h-3.5" />, label: '暗黑模式' },
-                              { id: 'system', icon: <Monitor className="w-3.5 h-3.5" />, label: '跟随系统' }
-                            ].map((item) => (
-                              <button
-                                key={item.id}
-                                onClick={() => {
-                                  setTheme(item.id as any);
-                                  setShowThemeSubmenu(false);
-                                  setShowUserDropdown(false);
-                                }}
-                                className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-xs text-gray-300 transition-colors"
-                              >
-                                <div className="flex items-center gap-2.5">
-                                  {item.icon}
-                                  <span>{item.label}</span>
-                                </div>
-                                {theme === item.id && <Check className="w-3.5 h-3.5 text-indigo-400" />}
-                              </button>
-                            ))}
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-
-                    <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-gray-300 transition-colors">
-                      <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center">
-                        <Settings className="w-3.5 h-3.5" />
-                      </div>
-                      <span className="font-medium text-sm">设置</span>
-                    </button>
-
-                    <div className="h-px bg-white/5 my-1 mx-2" />
-
-                    <button 
-                      onClick={() => setShowUserDropdown(false)}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-red-500/10 text-gray-300 hover:text-red-400 transition-colors"
-                    >
-                      <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center">
-                        <LogOut className="w-3.5 h-3.5" />
-                      </div>
-                      <span className="font-medium text-sm">退出登录</span>
-                    </button>
-                  </>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
+          <h1 className="text-xl font-bold">AIDA</h1>
           <div className="flex items-center gap-2">
             <Bell className="w-5 h-5 text-gray-400 cursor-pointer" />
           </div>
         </div>
 
         <div className="relative mb-6">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${isDark ? 'text-gray-500' : 'text-gray-400'}`} />
           <input 
             type="text" 
             placeholder="Search"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className={`w-full pl-10 pr-4 py-2 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors ${theme === 'dark' ? 'bg-white/5 text-white placeholder-gray-500' : 'bg-white border border-gray-200 text-gray-900 placeholder-gray-400'}`}
+            className={`w-full pl-10 pr-4 py-2 rounded-lg text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-colors ${isDark ? 'bg-white/5 text-white placeholder-gray-500' : 'bg-white border border-gray-200 text-gray-900 placeholder-gray-400'}`}
           />
         </div>
 
@@ -473,7 +345,7 @@ export default function ProjectManagement() {
             onDragOver={() => setHoveredCategoryId('Recents')}
             onDragLeave={() => setHoveredCategoryId(null)}
             isOver={hoveredCategoryId === 'Recents'}
-            theme={theme}
+            theme={resolvedTheme}
           />
           <NavItem 
             icon={<Grid className="w-4 h-4" />} 
@@ -483,7 +355,7 @@ export default function ProjectManagement() {
             onDragOver={() => setHoveredCategoryId('All projects')}
             onDragLeave={() => setHoveredCategoryId(null)}
             isOver={hoveredCategoryId === 'All projects'}
-            theme={theme}
+            theme={resolvedTheme}
           />
           <NavItem 
             icon={<Trash2 className="w-4 h-4" />} 
@@ -493,51 +365,54 @@ export default function ProjectManagement() {
             onDragOver={() => setHoveredCategoryId('Trash')}
             onDragLeave={() => setHoveredCategoryId(null)}
             isOver={hoveredCategoryId === 'Trash'}
-            theme={theme}
+            theme={resolvedTheme}
           />
         </nav>
 
         <div>
           <div className="flex items-center justify-between px-2 mb-2">
-            <span className={`text-xs font-semibold uppercase tracking-wider ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>Starred</span>
-            <Plus className={`w-4 h-4 cursor-pointer transition-colors ${theme === 'dark' ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`} onClick={handleCreateCategory} />
+            <span className={`text-xs font-semibold uppercase tracking-wider ${isDark ? 'text-gray-500' : 'text-gray-400'}`}>Starred</span>
+            <Plus className={`w-4 h-4 cursor-pointer transition-colors ${isDark ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`} onClick={handleCreateCategory} />
           </div>
-          <div className="space-y-1">
+          <Reorder.Group axis="y" values={categories} onReorder={handleReorderCategories} className="space-y-1">
             {categories.map(cat => (
-              <NavItem 
+              <Reorder.Item 
                 key={cat.id} 
-                id={cat.id}
-                label={cat.name} 
-                active={activeCategory === cat.id}
-                onClick={() => setActiveCategory(cat.id)}
-                onDragOver={() => setHoveredCategoryId(cat.id)}
-                onDragLeave={() => setHoveredCategoryId(null)}
-                isOver={hoveredCategoryId === cat.id}
-                isEditing={editingCategoryId === cat.id}
-                editValue={editCategoryName}
-                onEditChange={setEditCategoryName}
-                onSave={() => handleSaveCategory(cat.id)}
-                onCancel={() => setEditingCategoryId(null)}
-                onDoubleClick={() => {
-                  setEditingCategoryId(cat.id);
-                  setEditCategoryName(cat.name);
-                }}
-                onContextMenu={(e) => handleContextMenu(e, cat.id)}
-                onReorder={handleReorderCategories}
-                categories={categories}
-                draggedCategoryId={draggedCategoryId}
-                onDragStartCategory={(id) => setDraggedCategoryId(id)}
-                onDragEndCategory={() => setDraggedCategoryId(null)}
-                theme={theme}
-              />
+                value={cat}
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -10 }}
+              >
+                <NavItem 
+                  icon={<Folder className="w-4 h-4" />} 
+                  label={cat.name} 
+                  active={activeCategory === cat.id}
+                  onClick={() => setActiveCategory(cat.id)}
+                  onDragOver={() => setHoveredCategoryId(cat.id)}
+                  onDragLeave={() => setHoveredCategoryId(null)}
+                  isOver={hoveredCategoryId === cat.id}
+                  isEditing={editingCategoryId === cat.id}
+                  editValue={editCategoryName}
+                  onEditChange={setEditCategoryName}
+                  onSave={() => handleSaveCategory(cat.id)}
+                  onCancel={() => setEditingCategoryId(null)}
+                  onDoubleClick={() => {
+                    setEditingCategoryId(cat.id);
+                    setEditCategoryName(cat.name);
+                  }}
+                  onContextMenu={(e) => handleContextMenu(e, cat.id)}
+                  theme={resolvedTheme}
+                  showHandle
+                />
+              </Reorder.Item>
             ))}
-          </div>
+          </Reorder.Group>
         </div>
       </aside>
 
       {/* Main Content */}
-      <main className={`flex-1 flex flex-col relative z-10 transition-colors duration-200 ${theme === 'dark' ? 'bg-[#121212]' : 'bg-[#fafafa]'}`}>
-        <header className={`px-8 py-6 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md transition-colors duration-200 ${theme === 'dark' ? 'bg-[#121212]/80' : 'bg-[#fafafa]/80'}`}>
+      <main className={`flex-1 flex flex-col relative z-10 transition-colors duration-200 ${isDark ? 'bg-[#121212]' : 'bg-[#fafafa]'}`}>
+        <header className={`px-8 py-6 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md transition-colors duration-200 ${isDark ? 'bg-[#121212]/80' : 'bg-[#fafafa]/80'}`}>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-semibold">{activeCategory === 'All projects' ? 'All projects' : categories.find(c => c.id === activeCategory)?.name || activeCategory}</h1>
           </div>
@@ -552,14 +427,14 @@ export default function ProjectManagement() {
             </button>
 
             <div className={`flex items-center gap-1 p-1 rounded-2xl transition-colors duration-200 ${
-              theme === 'dark' ? 'bg-[#2c2c2c]' : 'bg-[#f0f0f5]'
+              isDark ? 'bg-[#2c2c2c]' : 'bg-[#f0f0f5]'
             }`}>
               <button 
                 onClick={() => setViewMode('grid')}
                 className={`px-4 py-1.5 rounded-xl text-[13px] font-semibold transition-all ${
                   viewMode === 'grid' 
                     ? 'bg-white text-indigo-600 shadow-sm' 
-                    : (theme === 'dark' ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700')
+                    : (isDark ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700')
                 }`}
               >
                 <LayoutGrid className="w-4 h-4" />
@@ -569,7 +444,7 @@ export default function ProjectManagement() {
                 className={`px-4 py-1.5 rounded-xl text-[13px] font-semibold transition-all ${
                   viewMode === 'list' 
                     ? 'bg-white text-indigo-600 shadow-sm' 
-                    : (theme === 'dark' ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700')
+                    : (isDark ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700')
                 }`}
               >
                 <LayoutList className="w-4 h-4" />
@@ -602,7 +477,7 @@ export default function ProjectManagement() {
                   onStar={(e) => toggleStar(project.id, project.isStarred, e)}
                   onDragStart={() => setDraggedProjectId(project.id)}
                   onDragEnd={handleDragEnd}
-                  isOwner={!project.userId || user?.uid === project.userId}
+                  isOwner={true}
                   theme={theme}
                 />
               ))}
@@ -725,7 +600,7 @@ export default function ProjectManagement() {
         </AnimatePresence>
       </div>
 
-      {/* Local dev mode: no auth/profile modals */}
+
 
       {/* Context Menu */}
       <AnimatePresence>
@@ -751,10 +626,10 @@ export default function ProjectManagement() {
   );
 }
 
-const NavItem: React.FC<{
-  icon?: React.ReactNode,
-  label: string,
-  active?: boolean,
+const NavItem: React.FC<{ 
+  icon: React.ReactNode, 
+  label: string, 
+  active?: boolean, 
   onClick: () => void,
   onDragOver?: () => void,
   onDragLeave?: () => void,
@@ -767,18 +642,13 @@ const NavItem: React.FC<{
   onDoubleClick?: () => void,
   onContextMenu?: (e: React.MouseEvent) => void,
   theme?: 'light' | 'dark' | 'system',
-  id?: string,
-  onReorder?: (newOrder: string[]) => void,
-  categories?: { id: string; name: string }[],
-  draggedCategoryId?: string | null,
-  onDragStartCategory?: (id: string) => void,
-  onDragEndCategory?: () => void
-}> = ({
-  icon,
-  label,
-  active,
-  onClick,
-  onDragOver,
+  showHandle?: boolean
+}> = ({ 
+  icon, 
+  label, 
+  active, 
+  onClick, 
+  onDragOver, 
   onDragLeave,
   isOver,
   isEditing,
@@ -789,93 +659,30 @@ const NavItem: React.FC<{
   onDoubleClick,
   onContextMenu,
   theme,
-  id,
-  onReorder,
-  categories,
-  draggedCategoryId,
-  onDragStartCategory,
-  onDragEndCategory
+  showHandle
 }) => {
-  const [isHovered, setIsHovered] = React.useState(false);
-  const [isDragging, setIsDragging] = React.useState(false);
-
-  const handleDragStart = (e: React.DragEvent) => {
-    if (id) {
-      setIsDragging(true);
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', id);
-      onDragStartCategory?.(id);
-      console.log('Drag started for:', id);
-    }
-  };
-
-  const handleDragEnd = () => {
-    setIsDragging(false);
-    onDragEndCategory?.();
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (!isDragging) {
-      onDragOver?.();
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const draggedId = e.dataTransfer.getData('text/plain');
-
-    if (draggedId && id && draggedId !== id && onReorder && categories) {
-      console.log('Dropped:', draggedId, 'onto:', id);
-
-      const draggedIndex = categories.findIndex(c => c.id === draggedId);
-      const targetIndex = categories.findIndex(c => c.id === id);
-
-      if (draggedIndex !== -1 && targetIndex !== -1) {
-        const newCategories = [...categories];
-        const [removed] = newCategories.splice(draggedIndex, 1);
-        newCategories.splice(targetIndex, 0, removed);
-
-        console.log('New order:', newCategories.map(c => c.name));
-        onReorder(newCategories.map(c => c.id));
-      }
-    }
-    setIsDragging(false);
-  };
-
-  const isDropTarget = draggedCategoryId && draggedCategoryId !== id;
-
   return (
-    <div
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+    <div 
+      onMouseEnter={onDragOver}
+      onMouseLeave={onDragLeave}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
-      className="relative"
+      className="relative group/nav"
     >
-      <div
-        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all cursor-pointer ${
-          active
-            ? (theme === 'dark' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600')
-            : (theme === 'dark' ? 'text-gray-400 hover:bg-white/5 hover:text-gray-200' : 'text-gray-600 hover:bg-gray-50')
-        } ${isOver && isDropTarget ? (theme === 'dark' ? 'bg-indigo-500/30 ring-2 ring-indigo-500 ring-inset scale-[1.02]' : 'bg-indigo-100 ring-2 ring-indigo-400 ring-inset scale-[1.02]') : ''} ${isDragging ? 'opacity-50' : ''}`}
-        draggable={!!id}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
-        onDragOver={handleDragOver}
-        onDrop={handleDrop}
+      <button 
         onClick={onClick}
+        className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+          active 
+            ? (theme === 'dark' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-indigo-50 text-indigo-600') 
+            : (theme === 'dark' ? 'text-gray-400 hover:bg-white/5 hover:text-gray-200' : 'text-gray-600 hover:bg-gray-50')
+        } ${isOver ? (theme === 'dark' ? 'bg-indigo-500/30 ring-2 ring-indigo-500 ring-inset scale-[1.02]' : 'bg-indigo-100 ring-2 ring-indigo-400 ring-inset scale-[1.02]') : ''}`}
       >
-        {(isHovered || isDragging) && id ? (
-          <GripVertical className="w-4 h-4 text-gray-400 cursor-grab active:cursor-grabbing flex-shrink-0" />
-        ) : (
-          <span className="w-4 h-4 flex-shrink-0" />
+        {showHandle && (
+          <GripVertical className="w-3 h-3 text-gray-400 opacity-0 group-hover/nav:opacity-100 transition-opacity cursor-grab active:cursor-grabbing shrink-0" />
         )}
         {icon}
         {isEditing ? (
-          <input
+          <input 
             autoFocus
             maxLength={50}
             value={editValue}
@@ -891,7 +698,7 @@ const NavItem: React.FC<{
         ) : (
           <span className="truncate">{label}</span>
         )}
-      </div>
+      </button>
     </div>
   );
 }

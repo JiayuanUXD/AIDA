@@ -1,47 +1,20 @@
-# AIDA - AI Design Acceptance
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
 
-一个轻量级的 AI 设计验收工具，用于比较设计稿和实现稿的差异。
+# Run and deploy your AI Studio app
 
-## 功能特性
+This contains everything you need to run your app locally.
 
-- 🔍 **智能差异分析**: 使用 AI 模型自动检测设计稿和实现稿的差异
-- 📊 **验收历史**: 支持多次验收并记录每次验收结果
-- 🎯 **精准定位**: 高亮显示具体的差异位置
-- 💾 **本地存储**: 使用 SQLite 数据库，无需外部服务
+View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53ab8a8db
 
-## 快速开始
+## Run Locally
 
-### 环境要求
-- Node.js 18+
+**Prerequisites:**  Node.js
 
-### 安装和运行
 
-1. 安装依赖：
-   ```bash
-   npm install
-   ```
-
-2. 配置 API 密钥（可选）：
-   在 `.env` 文件中设置 AI 模型的 API 密钥
-
-3. 启动开发服务器：
-   ```bash
-   npm run dev
-   ```
-
-4. 打开浏览器访问 `http://localhost:24678`
-
-## 项目结构
-
-```
-├── api/           # 后端 API 服务
-├── src/           # 前端 React 应用
-├── data/          # 本地数据库和上传文件
-└── node_modules/  # 项目依赖
-```
-
-## 可用命令
-
-- `npm run dev` - 启动开发服务器
-- `npm run build` - 构建生产版本
-- `npm run lint` - TypeScript 类型检查# AIDA0331
+1. Install dependencies:
+   `npm install`
+2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+3. Run the app:
+   `npm run dev`

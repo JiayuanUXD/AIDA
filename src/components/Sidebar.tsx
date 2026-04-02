@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Search, Clock, LayoutGrid, Trash2, Star, Plus, ChevronDown, Bell, GripVertical } from 'lucide-react';
+import React from 'react';
+import { Search, Clock, LayoutGrid, Trash2, Star, Plus, ChevronDown, Bell } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface SidebarProps {
@@ -7,7 +7,6 @@ interface SidebarProps {
   activeCategory: string;
   onSelectCategory: (id: string) => void;
   onAddCategory: () => void;
-  onReorderCategories: (newOrder: string[]) => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -15,9 +14,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeCategory,
   onSelectCategory,
   onAddCategory,
-  onReorderCategories,
 }) => {
-  const [draggedItem, setDraggedItem] = useState<string | null>(null);
   return (
     <div className="w-64 h-screen border-r border-gray-100 flex flex-col bg-white">
       {/* User Profile */}
@@ -95,28 +92,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={() => onSelectCategory(category.id)}
             className={cn(
               "w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors",
-              activeCategory === category.id ? "bg-gray-100 text-gray-900" : "text-gray-500 hover:bg-gray-50",
-              draggedItem === category.id && "opacity-50"
+              activeCategory === category.id ? "bg-gray-100 text-gray-900" : "text-gray-500 hover:bg-gray-50"
             )}
-            draggable
-            onDragStart={() => setDraggedItem(category.id)}
-            onDragEnd={() => setDraggedItem(null)}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => {
-              e.preventDefault();
-              if (draggedItem && draggedItem !== category.id) {
-                const newOrder = categories
-                  .filter(c => c.id !== draggedItem)
-                  .flatMap(c => 
-                    c.id === category.id 
-                      ? [categories.find(c => c.id === draggedItem)!, c]
-                      : [c]
-                  );
-                onReorderCategories(newOrder.map(c => c.id));
-              }
-            }}
           >
-            <GripVertical className="w-4 h-4 text-gray-400 cursor-grab active:cursor-grabbing" />
+            <span className="w-4 h-4" />
             <span>{category.name}</span>
           </button>
         ))}
