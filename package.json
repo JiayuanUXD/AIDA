@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx api/index.ts",
+    "dev:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && PORT=3001 DATA_DIR_NAME=data-opt tsx api/index.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",

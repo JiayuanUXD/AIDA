@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+data-opt/
+dev-opt.db*
+.worktrees/

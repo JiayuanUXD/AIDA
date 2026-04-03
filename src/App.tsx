@@ -1,15 +1,17 @@
 import React, { useState, useEffect, Component, ErrorInfo } from 'react';
-import { GoogleGenAI, Type } from "@google/genai";
 import { 
   Upload, Eye, EyeOff, ZoomIn, ZoomOut, SlidersHorizontal, Layers, RotateCcw,
   AlignStartHorizontal, AlignCenterHorizontal, AlignEndHorizontal,
   AlignStartVertical, AlignCenterVertical, AlignEndVertical, Link as LinkIcon, Loader2, Focus,
-  Sun, Moon, Split, Columns2, Zap, X, MessageSquare, Trash2, Save, History, LogIn, LogOut, ArrowLeft, Check, Edit3, ChevronLeft, Plus, Sparkles
+  Sun, Moon, Split, Columns2, Zap, X, MessageSquare, Trash2, Save, History, LogIn, LogOut, ArrowLeft, Check, Edit3, ChevronLeft, ChevronDown, ChevronRight, Plus, Sparkles,
+  Type as TypeIcon, LayoutTemplate, Palette
 } from 'lucide-react';
 
 import { Routes, Route, useParams, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import ProjectManagement from './pages/ProjectManagement';
+import AnalyzeActionBar from './components/AnalyzeActionBar';
+import DifferenceListItemV2 from './components/DifferenceListItemV2';
 import { 
   collection, 
   addDoc, 
@@ -27,22 +29,7 @@ import {
   uploadString, 
   getDownloadURL 
 } from './lib/localStorageStorage';
-
-
-interface Difference {
-  id: string;
-  title: string;
-  type: 'CONTENT' | 'LAYOUT' | 'STYLE';
-  description: string;
-  rect: {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  };
-  status: 'pending' | 'fixed' | 'ignored';
-  imageUrl?: string;
-}
+import type { AnalyzeModel, Difference, DifferenceSeverity, DifferenceType } from './types/analysis';
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -134,9 +121,46 @@ const compressImage = (base64: string, maxWidth = 4096, quality = 0.95): Promise
   });
 };
 
+const inferSeverityByType = (type: DifferenceType): DifferenceSeverity => {
+  if (type === 'CONTENT') return 'high';
+  if (type === 'LAYOUT') return 'medium';
+  return 'low';
+};
+
+const normalizeSeverity = (severity: unknown, type: DifferenceType): DifferenceSeverity => {
+  if (severity === 'high' || severity === 'medium' || severity === 'low') {
+    return severity;
+  }
+  return inferSeverityByType(type);
+};
+
+const nextSeverity = (severity: DifferenceSeverity): DifferenceSeverity => {
+  if (severity === 'high') return 'medium';
+  if (severity === 'medium') return 'low';
+  return 'high';
+};
+
+const getSeverityColor = (severity: DifferenceSeverity): { hex: string; rgb: string } => {
+  if (severity === 'high') return { hex: '#f43f5e', rgb: '244, 63, 94' };
+  if (severity === 'medium') return { hex: '#f59e0b', rgb: '245, 158, 11' };
+  return { hex: '#34d399', rgb: '52, 211, 153' };
+};
+
+const getDifferenceTypeIcon = (type: DifferenceType) => {
+  if (type === 'CONTENT') return TypeIcon;
+  if (type === 'LAYOUT') return LayoutTemplate;
+  return Palette;
+};
+
+type PaneType = 'design' | 'build';
+type RectBox = { x: number; y: number; width: number; height: number };
+
 function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const useNewDiffListUI =
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('newDiffUI') === '1';
 
 
   const [savedResults, setSavedResults] = useState<any[]>([]);
@@ -173,14 +197,17 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const [showCrosshair, setShowCrosshair] = useState(false);
   const [crosshairPos, setCrosshairPos] = useState({ x: 0, y: 0 });
   const [differences, setDifferences] = useState<Difference[]>([]);
-  const [selectedModel, setSelectedModel] = useState<'gemini' | 'kimi' | 'doubao'>('gemini');
+  const [selectedModel, setSelectedModel] = useState<AnalyzeModel>('gemini');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [selectedDiffId, setSelectedDiffId] = useState<string | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<'all' | DifferenceSeverity>('all');
   const [editingDiffId, setEditingDiffId] = useState<string | null>(null);
+  const [editingPaneType, setEditingPaneType] = useState<PaneType | null>(null);
   const [editType, setEditType] = useState<'move' | 'resize-nw' | 'resize-ne' | 'resize-sw' | 'resize-se' | 'resize-n' | 'resize-s' | 'resize-e' | 'resize-w' | null>(null);
   const [editStartPos, setEditStartPos] = useState({ x: 0, y: 0 });
   const [editStartRect, setEditStartRect] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const [isAddingDiff, setIsAddingDiff] = useState(false);
+  const [newDiffPaneType, setNewDiffPaneType] = useState<PaneType | null>(null);
   const [newDiffStart, setNewDiffStart] = useState<{ x: number, y: number } | null>(null);
   const [inlineEdit, setInlineEdit] = useState<{ id: string, field: 'title' | 'description' | 'type' } | null>(null);
   const [showSaveModal, setShowSaveModal] = useState(false);
@@ -228,11 +255,20 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     updatedAt: Date.now()
   });
 
-  const buildRoundFingerprint = () => JSON.stringify({
-    designImage: image,
-    buildImage: liveImage,
-    differences
-  });
+  const buildRoundFingerprintFromValues = (
+    designImageValue: string | null,
+    buildImageValue: string | null,
+    differencesValue: Difference[]
+  ) => {
+    const normalizedDifferences = normalizeDifferenceRects(differencesValue || []);
+    return JSON.stringify({
+      designImage: designImageValue ?? null,
+      buildImage: buildImageValue ?? null,
+      differences: normalizedDifferences
+    });
+  };
+
+  const buildRoundFingerprint = () => buildRoundFingerprintFromValues(image, liveImage, differences);
 
   const hasPendingChanges = saveStatus === 'saving' || saveStatus === 'unsaved';
 
@@ -282,13 +318,16 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const dragStartRef = React.useRef(dragStart);
   const comparisonModeRef = React.useRef(comparisonMode);
   const editTypeRef = React.useRef(editType);
+  const editingPaneTypeRef = React.useRef(editingPaneType);
   const editStartPosRef = React.useRef(editStartPos);
   const editStartRectRef = React.useRef(editStartRect);
   const editingDiffIdRef = React.useRef(editingDiffId);
   const isAddingDiffRef = React.useRef(isAddingDiff);
   const drawingRectRef = React.useRef<DOMRect | null>(null);
+  const newDiffPaneTypeRef = React.useRef(newDiffPaneType);
   const newDiffStartRef = React.useRef(newDiffStart);
   const imageSizeRef = React.useRef(imageSize);
+  const liveImageSizeRef = React.useRef(liveImageSize);
 
   useEffect(() => { positionRef.current = position; }, [position]);
   useEffect(() => { scaleRef.current = scale; }, [scale]);
@@ -296,14 +335,59 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   useEffect(() => { dragStartRef.current = dragStart; }, [dragStart]);
   useEffect(() => { comparisonModeRef.current = comparisonMode; }, [comparisonMode]);
   useEffect(() => { editTypeRef.current = editType; }, [editType]);
+  useEffect(() => { editingPaneTypeRef.current = editingPaneType; }, [editingPaneType]);
   useEffect(() => { editStartPosRef.current = editStartPos; }, [editStartPos]);
   useEffect(() => { editStartRectRef.current = editStartRect; }, [editStartRect]);
   useEffect(() => { editingDiffIdRef.current = editingDiffId; }, [editingDiffId]);
   useEffect(() => { isAddingDiffRef.current = isAddingDiff; }, [isAddingDiff]);
+  useEffect(() => { newDiffPaneTypeRef.current = newDiffPaneType; }, [newDiffPaneType]);
   useEffect(() => { newDiffStartRef.current = newDiffStart; }, [newDiffStart]);
   useEffect(() => { imageSizeRef.current = imageSize; }, [imageSize]);
+  useEffect(() => { liveImageSizeRef.current = liveImageSize; }, [liveImageSize]);
   useEffect(() => { currentImageRef.current = image; }, [image]);
   useEffect(() => { currentLiveImageRef.current = liveImage; }, [liveImage]);
+
+  const getPaneSize = (pane: PaneType) => {
+    const size = pane === 'design' ? imageSizeRef.current : liveImageSizeRef.current;
+    return {
+      width: size.width || 390,
+      height: size.height || 844,
+    };
+  };
+
+  const mapRectBetweenPanes = (rect: RectBox, fromPane: PaneType, toPane: PaneType): RectBox => {
+    const from = getPaneSize(fromPane);
+    const to = getPaneSize(toPane);
+    const sx = to.width / (from.width || 1);
+    const sy = to.height / (from.height || 1);
+    return {
+      x: Math.round(rect.x * sx),
+      y: Math.round(rect.y * sy),
+      width: Math.max(1, Math.round(rect.width * sx)),
+      height: Math.max(1, Math.round(rect.height * sy)),
+    };
+  };
+
+  const getRectForPane = (diff: Difference, pane: PaneType): RectBox => {
+    if (pane === 'design') {
+      return (diff.rectDesign || diff.rect || mapRectBetweenPanes(diff.rectBuild || diff.rect, 'build', 'design'));
+    }
+    return (diff.rectBuild || mapRectBetweenPanes(diff.rectDesign || diff.rect, 'design', 'build'));
+  };
+
+  const normalizeDifferenceRects = (items: Difference[]): Difference[] => {
+    return items.map((d) => {
+      const rectDesign = d.rectDesign || d.rect || mapRectBetweenPanes(d.rectBuild || { x: 0, y: 0, width: 1, height: 1 }, 'build', 'design');
+      const rectBuild = d.rectBuild || mapRectBetweenPanes(rectDesign, 'design', 'build');
+      return {
+        ...d,
+        rect: rectDesign,
+        rectDesign,
+        rectBuild,
+        severity: normalizeSeverity(d.severity, d.type),
+      };
+    });
+  };
   useEffect(() => {
     if (!lastSavedAt || saveStatus !== 'saved') return;
 
@@ -313,18 +397,6 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
 
     return () => window.clearInterval(interval);
   }, [lastSavedAt, saveStatus]);
-
-  useEffect(() => {
-    const handleBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (!hasPendingChanges) return;
-
-      event.preventDefault();
-      event.returnValue = '';
-    };
-
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [hasPendingChanges]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -386,7 +458,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
               if (ad.image) setImage(ad.image);
               if (ad.liveImage) setLiveImage(ad.liveImage);
               if (ad.differences) {
-                setDifferences(ad.differences);
+                setDifferences(normalizeDifferenceRects(ad.differences));
                 skipNextAutoSave.current = true;
               }
               if (ad.url) setUrl(ad.url);
@@ -434,7 +506,8 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
           id: doc.id,
           ...doc.data()
         }));
-        setRounds(fetchedRounds);
+        const normalizedRounds = normalizeRoundNumbers(fetchedRounds);
+        setRounds(sortRoundsForDisplay(normalizedRounds));
       });
       return () => unsubscribe();
     } else {
@@ -467,11 +540,11 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
       setRounds((prev) => [newRound, ...prev.filter((round) => round.id !== newRound.id)]);
       setShowRoundsPanel(true);
       setToast({ message: `Round ${roundNumber} created successfully`, type: 'success' });
-      lastSavedRoundDataRef.current = JSON.stringify({
-        designImage: roundData.designImage,
-        buildImage: roundData.buildImage,
-        differences: roundData.differences
-      });
+      lastSavedRoundDataRef.current = buildRoundFingerprintFromValues(
+        roundData.designImage ?? null,
+        roundData.buildImage ?? null,
+        roundData.differences ?? []
+      );
       setCurrentRoundId(docRef.id);
     } catch (error) {
       console.error("Error creating round:", error);
@@ -516,15 +589,16 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
       await saveCurrentRoundData(currentRoundId);
     }
 
+    const normalizedDifferences = normalizeDifferenceRects(round.differences || []);
     skipNextRoundAutoSave.current = true;
-    if (round.designImage) setImage(round.designImage);
-    if (round.buildImage) setLiveImage(round.buildImage);
-    if (round.differences) setDifferences(round.differences);
-    lastSavedRoundDataRef.current = JSON.stringify({
-      designImage: round.designImage ?? null,
-      buildImage: round.buildImage ?? null,
-      differences: round.differences ?? []
-    });
+    setImage(round.designImage ?? null);
+    setLiveImage(round.buildImage ?? null);
+    setDifferences(normalizedDifferences);
+    lastSavedRoundDataRef.current = buildRoundFingerprintFromValues(
+      round.designImage ?? null,
+      round.buildImage ?? null,
+      normalizedDifferences
+    );
     setCurrentRoundId(round.id);
   };
 
@@ -551,7 +625,19 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   };
 
   const normalizeRoundNumbers = (items: any[]) => {
-    const sortedByTime = [...items].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    const getRoundTime = (round: any) => {
+      const candidates = [round?.timestamp, round?.createdAt, round?.updatedAt];
+      for (const value of candidates) {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string') {
+          const parsed = Date.parse(value);
+          if (!Number.isNaN(parsed)) return parsed;
+        }
+      }
+      return 0;
+    };
+
+    const sortedByTime = [...items].sort((a, b) => getRoundTime(a) - getRoundTime(b));
     const roundNumberMap = new Map<string, number>();
 
     sortedByTime.forEach((round, index) => {
@@ -560,8 +646,24 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
 
     return items.map((round) => ({
       ...round,
+      timestamp: getRoundTime(round),
       roundNumber: roundNumberMap.get(round.id) ?? round.roundNumber
     }));
+  };
+
+  const sortRoundsForDisplay = (items: any[]) => {
+    return [...items].sort((a, b) => {
+      const aRound = typeof a.roundNumber === 'number' ? a.roundNumber : 0;
+      const bRound = typeof b.roundNumber === 'number' ? b.roundNumber : 0;
+      if (aRound !== bRound) return bRound - aRound;
+      return (b.timestamp ?? 0) - (a.timestamp ?? 0);
+    });
+  };
+
+  const formatRoundDate = (round: any) => {
+    const time = round?.timestamp;
+    if (!time || !Number.isFinite(time)) return '--';
+    return new Date(time).toLocaleDateString();
   };
 
   const normalizeDifferenceIds = (items: Difference[]) => {
@@ -586,7 +688,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     );
 
     setRoundDeleteConfirmId(null);
-    setRounds(remainingRounds);
+    setRounds(sortRoundsForDisplay(remainingRounds));
     if (currentRoundId === roundIdToDelete) {
       setCurrentRoundId(null);
     }
@@ -773,6 +875,34 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     }
   }, [liveStream, videoRef.current]);
 
+  useEffect(() => {
+    if (!image) return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const originalWidth = img.naturalWidth || 390;
+      const originalHeight = img.naturalHeight || 844;
+      const targetWidth = 390;
+      const targetHeight = (originalHeight / originalWidth) * targetWidth;
+      setImageSize({ width: targetWidth, height: targetHeight });
+    };
+    img.src = image;
+  }, [image]);
+
+  useEffect(() => {
+    if (!liveImage) return;
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      const originalWidth = img.naturalWidth || 390;
+      const originalHeight = img.naturalHeight || 844;
+      const targetWidth = 390;
+      const targetHeight = (originalHeight / originalWidth) * targetWidth;
+      setLiveImageSize({ width: targetWidth, height: targetHeight });
+    };
+    img.src = liveImage;
+  }, [liveImage]);
+
   const analyzeFidelity = async () => {
     if (!image || !liveImage || !isOwner) return;
     setIsAnalyzing(true);
@@ -862,88 +992,38 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         重要提示：所有文本字段（title, description）必须使用简体中文。
       `;
 
-      let result;
-      if (selectedModel === 'gemini') {
-        if (!process.env.GEMINI_API_KEY) {
-          throw new Error("Gemini API key is missing. Please ensure it is set in your environment variables.");
-        }
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const model = "gemini-3.1-pro-preview";
+      const response = await fetch("/api/analyze/ui", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt,
+          designImg,
+          buildImg,
+          model: selectedModel
+        })
+      });
 
-        const response = await ai.models.generateContent({
-          model,
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                { inlineData: designImg },
-                { inlineData: buildImg }
-              ]
-            }
-          ],
-          config: {
-            responseMimeType: "application/json",
-            maxOutputTokens: 8192,
-            responseSchema: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  title: { type: Type.STRING },
-                  type: { type: Type.STRING, enum: ['CONTENT', 'LAYOUT', 'STYLE'] },
-                  description: { type: Type.STRING },
-                  rect: {
-                    type: Type.OBJECT,
-                    properties: {
-                      x: { type: Type.NUMBER },
-                      y: { type: Type.NUMBER },
-                      width: { type: Type.NUMBER },
-                      height: { type: Type.NUMBER }
-                    },
-                    required: ['x', 'y', 'width', 'height']
-                  }
-                },
-                required: ['title', 'type', 'description', 'rect']
-              }
-            }
-          }
-        });
-        result = JSON.parse(response.text || '[]');
-      } else {
-        // Call Kimi Proxy
-        const response = await fetch("/api/analyze/ui", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            prompt,
-            designImg,
-            buildImg,
-            model: selectedModel
-          })
-        });
-
-        if (!response.ok) {
-          const contentType = response.headers.get("content-type");
-          if (contentType && contentType.includes("application/json")) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || "Kimi analysis failed");
-          } else {
-            const errorText = await response.text();
-            throw new Error(`Kimi analysis failed (${response.status}): ${errorText.substring(0, 100)}`);
-          }
-        }
-
+      if (!response.ok) {
         const contentType = response.headers.get("content-type");
         if (contentType && contentType.includes("application/json")) {
-          result = await response.json();
+          const errorData = await response.json();
+          throw new Error(errorData.error || "Analysis failed");
         } else {
-          const text = await response.text();
-          console.error(`Unexpected response format from backend (${response.status}):`, text.substring(0, 500));
-          throw new Error(`Unexpected response format from backend (${response.status}): Expected JSON but received ${contentType || "unknown"}. This often happens if the server is restarting or if the API route is not matched.`);
+          const errorText = await response.text();
+          throw new Error(`Analysis failed (${response.status}): ${errorText.substring(0, 100)}`);
         }
       }
+
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        console.error(`Unexpected response format from backend (${response.status}):`, text.substring(0, 500));
+        throw new Error(`Unexpected response format from backend (${response.status}): Expected JSON but received ${contentType || "unknown"}.`);
+      }
+
+      let result = await response.json();
 
       // 确保 result 是一个数组
       if (!Array.isArray(result)) {
@@ -959,8 +1039,11 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
             id: (index + 1).toString(),
             title: "无效的差异数据",
             type: "STYLE",
+            severity: 'low',
             description: "AI 返回的数据格式不正确",
             rect: { x: 10, y: 10, width: 100, height: 100 },
+            rectDesign: { x: 10, y: 10, width: 100, height: 100 },
+            rectBuild: mapRectBetweenPanes({ x: 10, y: 10, width: 100, height: 100 }, 'design', 'build'),
             status: 'pending'
           };
         }
@@ -968,6 +1051,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         // Ensure type is valid and uppercase
         const type = (d.type || 'STYLE').toUpperCase();
         const validTypes = ['CONTENT', 'LAYOUT', 'STYLE'];
+        const normalizedType = (validTypes.includes(type) ? type : 'STYLE') as DifferenceType;
         
         // Handle coordinate scaling
         let rect = d.rect || { x: 0, y: 0, width: 100, height: 100 };
@@ -1022,8 +1106,11 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         return {
           ...d,
           rect,
+          rectDesign: rect,
+          rectBuild: mapRectBetweenPanes(rect, 'design', 'build'),
           id: (index + 1).toString(),
-          type: validTypes.includes(type) ? type : 'STYLE',
+          type: normalizedType,
+          severity: normalizeSeverity(d.severity, normalizedType),
           status: 'pending'
         };
       });
@@ -1083,7 +1170,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const loadResult = (result: any) => {
     setImage(result.designImage);
     setLiveImage(result.buildImage);
-    setDifferences(result.differences || []);
+    setDifferences(normalizeDifferenceRects(result.differences || []));
     skipNextAutoSave.current = true;
     setUrl(result.url || '');
     setFigmaUrl(result.figmaUrl || '');
@@ -1123,6 +1210,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         const dx = (e.clientX - editStartPosRef.current.x) / scaleRef.current;
         const dy = (e.clientY - editStartPosRef.current.y) / scaleRef.current;
         const start = editStartRectRef.current;
+        const editingPane = editingPaneTypeRef.current || 'design';
 
         setDifferences(prev => prev.map(d => {
           if (d.id !== editingDiffIdRef.current) return d;
@@ -1174,7 +1262,11 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
           if (width < 10) width = 10;
           if (height < 10) height = 10;
 
-          return { ...d, rect: { x, y, width, height } };
+          const updatedRect = { x, y, width, height };
+          if (editingPane === 'design') {
+            return { ...d, rect: updatedRect, rectDesign: updatedRect };
+          }
+          return { ...d, rectBuild: updatedRect };
         }));
       }
 
@@ -1182,21 +1274,29 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         const rect = drawingRectRef.current;
         const currentX = (e.clientX - rect.left) / scaleRef.current;
         const currentY = (e.clientY - rect.top) / scaleRef.current;
+        const pane = newDiffPaneTypeRef.current || 'design';
+        const paneSize = getPaneSize(pane);
         
-        const x = Math.max(0, Math.min(imageSizeRef.current.width || 10000, Math.min(newDiffStartRef.current.x, currentX)));
-        const y = Math.max(0, Math.min(imageSizeRef.current.height || 10000, Math.min(newDiffStartRef.current.y, currentY)));
-        const width = Math.min(imageSizeRef.current.width || 10000, Math.abs(currentX - newDiffStartRef.current.x));
-        const height = Math.min(imageSizeRef.current.height || 10000, Math.abs(currentY - newDiffStartRef.current.y));
+        const x = Math.max(0, Math.min(paneSize.width || 10000, Math.min(newDiffStartRef.current.x, currentX)));
+        const y = Math.max(0, Math.min(paneSize.height || 10000, Math.min(newDiffStartRef.current.y, currentY)));
+        const width = Math.min(paneSize.width || 10000, Math.abs(currentX - newDiffStartRef.current.x));
+        const height = Math.min(paneSize.height || 10000, Math.abs(currentY - newDiffStartRef.current.y));
 
         if (width > 2 && height > 2) {
           setDifferences(prev => {
             const filtered = prev.filter(d => d.id !== 'temp-new');
+            const paneRect = { x, y, width, height };
+            const rectDesign = pane === 'design' ? paneRect : mapRectBetweenPanes(paneRect, 'build', 'design');
+            const rectBuild = pane === 'build' ? paneRect : mapRectBetweenPanes(paneRect, 'design', 'build');
             return [...filtered, {
               id: 'temp-new',
               title: '手动标记',
               type: 'LAYOUT',
+              severity: 'medium',
               description: '手动添加的差异区域。',
-              rect: { x, y, width, height },
+              rect: rectDesign,
+              rectDesign,
+              rectBuild,
               status: 'pending'
             }];
           });
@@ -1230,6 +1330,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
       setIsDragging(false);
       setIsResizingSlider(false);
       setEditingDiffId(null);
+      setEditingPaneType(null);
       setEditType(null);
 
       if (isAddingDiffRef.current && newDiffStartRef.current) {
@@ -1246,6 +1347,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
           return prev.filter(d => d.id !== 'temp-new');
         });
         setNewDiffStart(null);
+        setNewDiffPaneType(null);
         drawingRectRef.current = null;
       }
     };
@@ -1321,13 +1423,14 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     };
   }, [isDragging, isResizingSlider, dragStart, image, imageSize, scale, position, isVisible, comparisonMode, selectedDiffId, editingDiffId, isAddingDiff, inlineEdit, isOwner]);
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handleMouseDown = (e: React.MouseEvent, paneType: PaneType = 'design') => {
     if (!isOwner) return;
     if (isAddingDiff) {
       const rect = e.currentTarget.getBoundingClientRect();
       drawingRectRef.current = rect;
       const x = (e.clientX - rect.left) / scale;
       const y = (e.clientY - rect.top) / scale;
+      setNewDiffPaneType(paneType);
       setNewDiffStart({ x, y });
       return;
     }
@@ -1527,11 +1630,24 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     if (selectedDiffId === id) setSelectedDiffId(null);
   };
 
+  const severityMeta: Record<DifferenceSeverity, { label: string; dotClass: string }> = {
+    high: { label: '高严重', dotClass: 'bg-rose-400' },
+    medium: { label: '中严重', dotClass: 'bg-amber-400' },
+    low: { label: '低严重', dotClass: 'bg-emerald-400' },
+  };
+
+  const pendingDiffs = differences.filter((d) => d.status === 'pending');
+  const severityFilteredPendingDiffs = pendingDiffs.filter((d) => {
+    if (severityFilter === 'all') return true;
+    return normalizeSeverity(d.severity, d.type) === severityFilter;
+  });
+
   const renderDifferenceBoxes = (paneType: 'design' | 'build') => {
     return differences.filter(d => d.status === 'pending').map((diff) => {
       const isSelected = selectedDiffId === diff.id;
-      const color = diff.type === 'CONTENT' ? '#6366f1' : diff.type === 'LAYOUT' ? '#f59e0b' : '#f43f5e';
-      const colorRgb = diff.type === 'CONTENT' ? '99, 102, 241' : diff.type === 'LAYOUT' ? '245, 158, 11' : '244, 63, 94';
+      const severity = normalizeSeverity(diff.severity, diff.type);
+      const severityColor = getSeverityColor(severity);
+      const paneRect = getRectForPane(diff, paneType);
       
       return (
         <div
@@ -1540,13 +1656,13 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
             isSelected ? '' : 'hover:brightness-110'
           }`}
           style={{
-            left: `${diff.rect.x}px`,
-            top: `${diff.rect.y}px`,
-            width: `${diff.rect.width}px`,
-            height: `${diff.rect.height}px`,
+            left: `${paneRect.x}px`,
+            top: `${paneRect.y}px`,
+            width: `${paneRect.width}px`,
+            height: `${paneRect.height}px`,
             cursor: editingDiffId === diff.id ? 'grabbing' : isSelected ? 'move' : 'pointer',
-            borderColor: isSelected ? color : `rgba(${colorRgb}, 0.4)`,
-            backgroundColor: isSelected ? `rgba(${colorRgb}, 0.1)` : 'transparent',
+            borderColor: isSelected ? severityColor.hex : `rgba(${severityColor.rgb}, 0.4)`,
+            backgroundColor: isSelected ? `rgba(${severityColor.rgb}, 0.1)` : 'transparent',
           }}
           onClick={(e) => {
             e.stopPropagation();
@@ -1556,9 +1672,10 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
             if (e.button !== 0 || !isOwner) return;
             e.stopPropagation();
             setEditingDiffId(diff.id);
+            setEditingPaneType(paneType);
             setEditType('move');
             setEditStartPos({ x: e.clientX, y: e.clientY });
-            setEditStartRect({ ...diff.rect });
+            setEditStartRect({ ...paneRect });
           }}
         >
           {/* Resize Handles */}
@@ -1582,26 +1699,21 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                       : ''
                   }`}
                   style={{ 
-                    borderColor: handle.isCorner ? color : 'transparent',
+                    borderColor: handle.isCorner ? severityColor.hex : 'transparent',
                     cursor: handle.cursor 
                   }}
                   onMouseDown={(e) => { 
                     e.stopPropagation(); 
                     setEditingDiffId(diff.id); 
+                    setEditingPaneType(paneType);
                     setEditType(handle.type as any); 
                     setEditStartPos({ x: e.clientX, y: e.clientY }); 
-                    setEditStartRect({ ...diff.rect }); 
+                    setEditStartRect({ ...paneRect }); 
                   }}
                 />
               ))}
             </>
           )}
-          <div 
-            className="absolute -top-5 left-0 text-white text-[10px] px-1 rounded font-bold pointer-events-none"
-            style={{ backgroundColor: color }}
-          >
-            {diff.id}
-          </div>
         </div>
       );
     });
@@ -2083,7 +2195,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                   <div 
                     className={`relative inline-block ${isAddingDiff ? 'cursor-crosshair' : ''}`} 
                     style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
-                    onMouseDown={handleMouseDown}
+                    onMouseDown={(e) => handleMouseDown(e, 'design')}
                   >
                     <img src={image} className="max-w-none" style={{ width: '390px' }} draggable={false} />
                     {renderDifferenceBoxes('design')}
@@ -2127,7 +2239,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                   <div 
                     className={`relative inline-block ${isAddingDiff ? 'cursor-crosshair' : ''}`} 
                     style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
-                    onMouseDown={handleMouseDown}
+                    onMouseDown={(e) => handleMouseDown(e, 'build')}
                   >
                     {liveSourceType === 'sim' && liveStream ? (
                       <>
@@ -2336,7 +2448,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                     <div 
                       className={`relative inline-block ${isAddingDiff && isOwner ? 'cursor-crosshair' : ''}`} 
                       style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
-                      onMouseDown={handleMouseDown}
+                      onMouseDown={(e) => handleMouseDown(e, 'build')}
                     >
                       <img 
                         src={liveImage} 
@@ -2352,7 +2464,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                     <div 
                       className={`relative inline-block ${isAddingDiff && isOwner ? 'cursor-crosshair' : ''}`} 
                       style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
-                      onMouseDown={handleMouseDown}
+                      onMouseDown={(e) => handleMouseDown(e, 'build')}
                     >
                       <video ref={videoRef} autoPlay playsInline className="max-w-none rounded border border-white/10" style={{ width: '390px' }} />
                     </div>
@@ -2373,7 +2485,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                         style={{
                           transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
                         }}
-                        onMouseDown={handleMouseDown}
+                        onMouseDown={(e) => handleMouseDown(e, 'design')}
                       >
                         <img 
                           src={image} 
@@ -2451,191 +2563,269 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-2">
-              {differences.filter(d => d.status === 'pending').map((diff, idx) => (
-                <div 
-                  key={diff.id}
-                  onClick={() => {
-                    if (selectedDiffId !== diff.id) {
-                      setSelectedDiffId(diff.id);
-                    }
-                  }}
-                  className={`p-4 rounded-xl border transition-all cursor-pointer group relative difference-item ${
-                    selectedDiffId === diff.id 
-                      ? 'bg-indigo-500/10 border-indigo-500/30' 
-                      : 'bg-transparent border-transparent hover:bg-indigo-500/10 hover:border-indigo-500/30'
-                  }`}
-                >
-                  <div className="flex items-start gap-3">
-                    <span className={`w-5 h-5 shrink-0 rounded-full text-[10px] flex items-center justify-center font-bold transition-colors ${
-                      selectedDiffId === diff.id ? 'bg-indigo-500/20 text-indigo-400' : 'bg-white/10 text-gray-500'
-                    }`}>
-                      {diff.id}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      {/* Title Section */}
-                      <div className="flex items-center justify-between mb-1 group/field">
-                        {inlineEdit?.id === diff.id && inlineEdit?.field === 'title' ? (
-                          <div className="flex-1 flex items-center gap-2 editing-field" onClick={e => e.stopPropagation()}>
-                            <input 
-                              autoFocus
-                              type="text"
-                              value={diff.title}
-                              onChange={(e) => {
-                                setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, title: e.target.value } : d));
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') setInlineEdit(null);
-                              }}
-                              className="flex-1 bg-white/5 border border-indigo-500/50 rounded px-2 py-0.5 text-[12px] font-bold focus:outline-none"
-                            />
-                            <select 
-                              value={diff.type}
-                              onChange={(e) => {
-                                setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, type: e.target.value as any } : d));
-                              }}
-                              className="bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[9px] font-bold focus:outline-none focus:border-indigo-500"
-                            >
-                              <option value="CONTENT">CONTENT</option>
-                              <option value="LAYOUT">LAYOUT</option>
-                              <option value="STYLE">STYLE</option>
-                            </select>
-                            <button onClick={() => setInlineEdit(null)} className="text-indigo-400 hover:text-indigo-300">
-                              <Check className="w-3 h-3" />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="flex-1 flex items-center justify-between min-w-0">
-                            <h3 
-                              className={`text-[12px] font-bold truncate pr-2 transition-colors ${
-                                selectedDiffId === diff.id && isOwner ? 'cursor-text hover:text-indigo-400' : 'cursor-pointer'
-                              }`}
-                              onDoubleClick={(e) => {
-                                if (selectedDiffId === diff.id && isOwner) {
-                                  e.stopPropagation();
-                                  setInlineEdit({ id: diff.id, field: 'title' });
-                                }
-                              }}
-                            >
-                              {diff.title}
-                            </h3>
-                            <div className="flex items-center gap-2">
-                              <button 
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (!isOwner) return;
-                                  const types: Difference['type'][] = ['CONTENT', 'LAYOUT', 'STYLE'];
-                                  const currentIndex = types.indexOf(diff.type);
-                                  const nextType = types[(currentIndex + 1) % types.length];
-                                  setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, type: nextType } : d));
-                                }}
-                                title={isOwner ? "点击切换类型" : ""}
-                                className={`text-[9px] px-2 py-0.5 rounded font-bold tracking-tighter transition-colors min-w-[48px] text-center ${isOwner ? 'hover:brightness-110' : 'cursor-default'} ${
-                                  diff.type === 'CONTENT' ? 'bg-indigo-500/20 text-indigo-400' : 
-                                  diff.type === 'LAYOUT' ? 'bg-amber-500/20 text-amber-400' :
-                                  'bg-rose-500/20 text-rose-400'
-                                }`}
-                              >
-                                {diff.type}
-                              </button>
-                              {isOwner && (
-                                <button
-                                  onClick={(e) => deleteDifference(diff.id, e)}
-                                  className={`p-1 rounded-md transition-all ${
-                                    theme === 'dark'
-                                      ? 'text-gray-500 hover:text-rose-400 hover:bg-rose-500/10'
-                                      : 'text-gray-400 hover:text-rose-500 hover:bg-rose-50'
-                                  }`}
-                                  title="Delete difference"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
+              <div className="px-1 pb-1 flex items-center gap-1.5">
+                {(['all', 'high', 'medium', 'low'] as Array<'all' | DifferenceSeverity>).map((filterValue) => {
+                  const isActive = severityFilter === filterValue;
+                  const count = filterValue === 'all'
+                    ? pendingDiffs.length
+                    : pendingDiffs.filter((d) => normalizeSeverity(d.severity, d.type) === filterValue).length;
+                  const label = filterValue === 'all'
+                    ? '全部'
+                    : severityMeta[filterValue].label;
+                  return (
+                    <button
+                      key={filterValue}
+                      onClick={() => setSeverityFilter(filterValue)}
+                      className={`text-[10px] px-2 py-1 rounded-full border transition-colors ${
+                        isActive
+                          ? 'bg-indigo-500/15 border-indigo-500/40 text-indigo-400'
+                          : (theme === 'dark' ? 'bg-white/5 border-white/10 text-gray-400 hover:text-gray-200' : 'bg-white border-gray-200 text-gray-500 hover:text-gray-700')
+                      }`}
+                    >
+                      {label} {count}
+                    </button>
+                  );
+                })}
+              </div>
 
-                      {/* Description Section */}
-                      <div className="group/field relative">
-                        {inlineEdit?.id === diff.id && inlineEdit?.field === 'description' ? (
-                          <div className="mt-1 editing-field" onClick={e => e.stopPropagation()}>
-                            <textarea 
-                              autoFocus
-                              value={diff.description}
-                              onChange={(e) => {
-                                setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, description: e.target.value } : d));
-                              }}
-                              className="w-full bg-white/5 border border-indigo-500/50 rounded px-2 py-1 text-[11px] focus:outline-none h-20 resize-none"
-                            />
-                            <div className="flex justify-end mt-1">
-                              <button onClick={() => setInlineEdit(null)} className="flex items-center gap-1 text-[10px] text-indigo-400 hover:text-indigo-300 font-bold">
-                                <Check className="w-3 h-3" /> 保存
-                              </button>
+              {severityFilteredPendingDiffs.length > 0 ? (
+                <div className="space-y-2">
+                  {useNewDiffListUI ? (
+                    severityFilteredPendingDiffs.map((diff) => {
+                      const severity = normalizeSeverity(diff.severity, diff.type);
+                      return (
+                        <DifferenceListItemV2
+                          key={diff.id}
+                          diff={diff}
+                          severity={severity}
+                          isSelected={selectedDiffId === diff.id}
+                          isOwner={isOwner}
+                          theme={theme === 'dark' ? 'dark' : 'light'}
+                          inlineEditField={inlineEdit?.id === diff.id && (inlineEdit.field === 'title' || inlineEdit.field === 'description') ? inlineEdit.field : null}
+                          onSelect={() => {
+                            if (selectedDiffId !== diff.id) {
+                              setSelectedDiffId(diff.id);
+                            }
+                          }}
+                          onStartEdit={(field) => {
+                            setInlineEdit({ id: diff.id, field });
+                          }}
+                          onStopEdit={() => setInlineEdit(null)}
+                          onTitleChange={(value) => {
+                            setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, title: value } : d));
+                          }}
+                          onDescriptionChange={(value) => {
+                            setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, description: value } : d));
+                          }}
+                          onCycleType={() => {
+                            const types: Difference['type'][] = ['CONTENT', 'LAYOUT', 'STYLE'];
+                            const currentIndex = types.indexOf(diff.type);
+                            const nextType = types[(currentIndex + 1) % types.length];
+                            setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, type: nextType } : d));
+                          }}
+                          onSetSeverity={(value) => {
+                            setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, severity: value } : d));
+                          }}
+                          onMarkFixed={() => updateDiffStatus(diff.id, 'fixed')}
+                          onIgnore={() => updateDiffStatus(diff.id, 'ignored')}
+                        />
+                      );
+                    })
+                  ) : (
+                    severityFilteredPendingDiffs.map((diff) => (
+                          <div
+                            key={diff.id}
+                            onClick={() => {
+                              if (selectedDiffId !== diff.id) {
+                                setSelectedDiffId(diff.id);
+                              }
+                            }}
+                            className={`p-4 rounded-xl transition-all cursor-pointer group relative difference-item ${
+                              selectedDiffId === diff.id
+                                ? 'bg-indigo-500/10'
+                                : 'bg-transparent hover:bg-indigo-500/10'
+                            }`}
+                          >
+                            <div className="flex items-start gap-3">
+                              {(() => {
+                                const Icon = getDifferenceTypeIcon(diff.type);
+                                return (
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (!isOwner) return;
+                                      const types: Difference['type'][] = ['CONTENT', 'LAYOUT', 'STYLE'];
+                                      const currentIndex = types.indexOf(diff.type);
+                                      const nextType = types[(currentIndex + 1) % types.length];
+                                      setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, type: nextType } : d));
+                                    }}
+                                    title={isOwner ? "点击切换类型" : ""}
+                                    className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center transition-colors ${
+                                      selectedDiffId === diff.id ? 'text-indigo-400' : 'text-gray-500'
+                                    }`}
+                                  >
+                                    <Icon className="w-3 h-3" />
+                                  </button>
+                                );
+                              })()}
+                              <div className="flex-1 min-w-0">
+                                {/* Title Section */}
+                                <div className="flex items-center justify-between mb-1 group/field">
+                                  {inlineEdit?.id === diff.id && inlineEdit?.field === 'title' ? (
+                                    <div className="flex-1 flex items-center gap-2 editing-field" onClick={e => e.stopPropagation()}>
+                                      <input
+                                        autoFocus
+                                        type="text"
+                                        value={diff.title}
+                                        onChange={(e) => {
+                                          setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, title: e.target.value } : d));
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key === 'Enter') setInlineEdit(null);
+                                        }}
+                                        className="flex-1 bg-white/5 border border-indigo-500/50 rounded px-2 py-0.5 text-[12px] font-bold focus:outline-none"
+                                      />
+                                      <select
+                                        value={diff.type}
+                                        onChange={(e) => {
+                                          setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, type: e.target.value as any } : d));
+                                        }}
+                                        className="bg-white/5 border border-white/10 rounded px-1 py-0.5 text-[9px] font-bold focus:outline-none focus:border-indigo-500"
+                                      >
+                                        <option value="CONTENT">CONTENT</option>
+                                        <option value="LAYOUT">LAYOUT</option>
+                                        <option value="STYLE">STYLE</option>
+                                      </select>
+                                      <button onClick={() => setInlineEdit(null)} className="text-indigo-400 hover:text-indigo-300">
+                                        <Check className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex-1 flex items-center justify-between min-w-0">
+                                      <h3
+                                        className={`text-[12px] font-bold truncate pr-2 transition-colors ${
+                                          selectedDiffId === diff.id && isOwner ? 'cursor-text hover:text-indigo-400' : 'cursor-pointer'
+                                        }`}
+                                        onDoubleClick={(e) => {
+                                          if (selectedDiffId === diff.id && isOwner) {
+                                            e.stopPropagation();
+                                            setInlineEdit({ id: diff.id, field: 'title' });
+                                          }
+                                        }}
+                                      >
+                                        {diff.title}
+                                      </h3>
+                                      <div className="flex items-center gap-2">
+                                        {(() => {
+                                          const severity = normalizeSeverity(diff.severity, diff.type);
+                                          return (
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (!isOwner) return;
+                                                const updated = nextSeverity(severity);
+                                                setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, severity: updated } : d));
+                                              }}
+                                              title={isOwner ? `严重等级：${severity === 'high' ? '高' : severity === 'medium' ? '中' : '低'}（点击切换）` : `严重等级：${severity === 'high' ? '高' : severity === 'medium' ? '中' : '低'}`}
+                                              aria-label={`severity-${severity}`}
+                                              className={`w-2.5 h-2.5 rounded-full transition-all ${
+                                                severity === 'high'
+                                                  ? 'bg-rose-400 shadow-[0_0_0_2px_rgba(251,113,133,0.18)]'
+                                                  : severity === 'medium'
+                                                    ? 'bg-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.18)]'
+                                                    : 'bg-emerald-400 shadow-[0_0_0_2px_rgba(52,211,153,0.18)]'
+                                              }`}
+                                            />
+                                          );
+                                        })()}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Description Section */}
+                                <div className="group/field relative">
+                                  {inlineEdit?.id === diff.id && inlineEdit?.field === 'description' ? (
+                                    <div className="mt-1 editing-field" onClick={e => e.stopPropagation()}>
+                                      <textarea
+                                        autoFocus
+                                        value={diff.description}
+                                        onChange={(e) => {
+                                          setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, description: e.target.value } : d));
+                                        }}
+                                        className="w-full bg-white/5 border border-indigo-500/50 rounded px-2 py-1 text-[11px] focus:outline-none h-20 resize-none"
+                                      />
+                                      <div className="flex justify-end mt-1">
+                                        <button onClick={() => setInlineEdit(null)} className="flex items-center gap-1 text-[10px] text-indigo-400 hover:text-indigo-300 font-bold">
+                                          <Check className="w-3 h-3" /> 保存
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="relative">
+                                      <p
+                                        className={`text-[11px] leading-relaxed line-clamp-3 group-hover:line-clamp-none transition-all pr-6 ${
+                                          theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+                                        } ${
+                                          selectedDiffId === diff.id && isOwner
+                                            ? (theme === 'dark' ? 'cursor-text hover:text-gray-200' : 'cursor-text hover:text-gray-700')
+                                            : 'cursor-pointer'
+                                        }`}
+                                        onDoubleClick={(e) => {
+                                          if (selectedDiffId === diff.id && isOwner) {
+                                            e.stopPropagation();
+                                            setInlineEdit({ id: diff.id, field: 'description' });
+                                          }
+                                        }}
+                                      >
+                                        {diff.description}
+                                      </p>
+                                      {diff.imageUrl && (
+                                        <div className="mt-2">
+                                          <a
+                                            href={diff.imageUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-500/10 text-indigo-400 text-[10px] font-bold hover:bg-indigo-500/20 transition-colors"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <Sparkles className="w-3 h-3" /> 查看对比图 (View Comparison)
+                                          </a>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {selectedDiffId === diff.id && isOwner && (
+                                  <div className="flex gap-2 mt-3 animate-in fade-in slide-in-from-top-1">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateDiffStatus(diff.id, 'fixed');
+                                      }}
+                                      className="flex-1 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-[10px] font-bold hover:bg-emerald-500/30 transition-colors"
+                                    >
+                                      Mark Fixed
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateDiffStatus(diff.id, 'ignored');
+                                      }}
+                                      className="flex-1 py-1.5 rounded-lg bg-white/5 text-gray-400 text-[10px] font-bold hover:bg-white/10 transition-colors"
+                                    >
+                                      Ignore
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        ) : (
-                          <div className="relative">
-                            <p 
-                              className={`text-[11px] text-gray-400 leading-relaxed line-clamp-3 group-hover:line-clamp-none transition-all pr-6 ${
-                                selectedDiffId === diff.id && isOwner ? 'cursor-text hover:text-gray-300' : 'cursor-pointer'
-                              }`}
-                              onDoubleClick={(e) => {
-                                if (selectedDiffId === diff.id && isOwner) {
-                                  e.stopPropagation();
-                                  setInlineEdit({ id: diff.id, field: 'description' });
-                                }
-                              }}
-                            >
-                              {diff.description}
-                            </p>
-                            {diff.imageUrl && (
-                              <div className="mt-2">
-                                <a 
-                                  href={diff.imageUrl} 
-                                  target="_blank" 
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-indigo-500/10 text-indigo-400 text-[10px] font-bold hover:bg-indigo-500/20 transition-colors"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <Sparkles className="w-3 h-3" /> 查看对比图 (View Comparison)
-                                </a>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      
-                      {selectedDiffId === diff.id && isOwner && (
-                        <div className="flex gap-2 mt-3 animate-in fade-in slide-in-from-top-1">
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              updateDiffStatus(diff.id, 'fixed');
-                            }}
-                            className="flex-1 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-400 text-[10px] font-bold hover:bg-emerald-500/30 transition-colors"
-                          >
-                            Mark Fixed
-                          </button>
-                          <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              updateDiffStatus(diff.id, 'ignored');
-                            }}
-                            className="flex-1 py-1.5 rounded-lg bg-white/5 text-gray-400 text-[10px] font-bold hover:bg-white/10 transition-colors"
-                          >
-                            Ignore
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <div className={`w-2 h-2 rounded-full shrink-0 mt-1.5 ${
-                      diff.type === 'CONTENT' ? 'bg-indigo-500' : 
-                      diff.type === 'LAYOUT' ? 'bg-amber-500' : 
-                      'bg-rose-500'
-                    }`} />
-                  </div>
+                    ))
+                  )}
                 </div>
-              ))}
+              ) : null}
               
               {differences.some(d => d.status !== 'pending') && (
                 <div className="pt-4 px-2">
@@ -2644,6 +2834,28 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                     {differences.filter(d => d.status !== 'pending').map(diff => (
                       <div key={diff.id} className="flex items-center justify-between p-2 rounded bg-white/5 text-[11px] group/resolved">
                         <div className="flex items-center gap-2 min-w-0">
+                          {(() => {
+                            const severity = normalizeSeverity(diff.severity, diff.type);
+                            return (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!isOwner) return;
+                                  const updated = nextSeverity(severity);
+                                  setDifferences(prev => prev.map(d => d.id === diff.id ? { ...d, severity: updated } : d));
+                                }}
+                                title={isOwner ? `严重等级：${severity === 'high' ? '高' : severity === 'medium' ? '中' : '低'}（点击切换）` : `严重等级：${severity === 'high' ? '高' : severity === 'medium' ? '中' : '低'}`}
+                                aria-label={`resolved-severity-${severity}`}
+                                className={`w-2.5 h-2.5 rounded-full transition-all shrink-0 ${
+                                  severity === 'high'
+                                    ? 'bg-rose-400 shadow-[0_0_0_2px_rgba(251,113,133,0.18)]'
+                                    : severity === 'medium'
+                                      ? 'bg-amber-400 shadow-[0_0_0_2px_rgba(251,191,36,0.18)]'
+                                      : 'bg-emerald-400 shadow-[0_0_0_2px_rgba(52,211,153,0.18)]'
+                                }`}
+                              />
+                            );
+                          })()}
                           <span className="truncate">{diff.title}</span>
                           <span className={`text-[8px] uppercase font-bold px-1 rounded ${
                             diff.status === 'fixed' ? 'bg-emerald-500/20 text-emerald-500' : 'bg-gray-500/20 text-gray-400'
@@ -2659,13 +2871,6 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                               title="恢复"
                             >
                               <RotateCcw className="w-3 h-3" />
-                            </button>
-                            <button
-                              onClick={(e) => deleteDifference(diff.id, e)}
-                              className="p-1 hover:bg-rose-500/10 rounded text-rose-400 transition-all"
-                              title="Delete difference"
-                            >
-                              <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
                         )}
@@ -2684,6 +2889,18 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                 </p>
               </div>
             </div>
+
+            {isOwner && (
+              <AnalyzeActionBar
+                theme={theme}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+                onAnalyze={analyzeFidelity}
+                isAnalyzing={isAnalyzing}
+                hasBothImages={!!image && !!liveImage}
+                hasDifferences={differences.length > 0}
+              />
+            )}
           </div>
         ) : (
           <>
@@ -2883,44 +3100,17 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         )}
               </div>
             </div>
-            {isOwner && image && liveImage && (
-      <div className={`p-0 border-t shrink-0 z-50 ${theme === 'dark' ? 'bg-[#1e1e1e] border-white/10' : 'bg-white border-black/5'}`}>
-            <div className="flex items-center">
-              <div className="w-1/4">
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value as any)}
-                  className={`w-full text-[11px] font-bold px-2 py-3 border-r transition-colors focus:outline-none ${
-                    theme === 'dark' 
-                      ? 'bg-[#2c2c2c] border-[#383838] text-gray-300 focus:border-indigo-500' 
-                      : 'bg-gray-50 border-gray-200 text-gray-600 focus:border-indigo-500'
-                  }`}
-                >
-                  <option value="gemini">Gemini</option>
-                  <option value="kimi">Kimi</option>
-                  <option value="doubao">Doubao</option>
-                </select>
-              </div>
-              <button 
-                onClick={() => analyzeFidelity()}
-                disabled={isAnalyzing}
-                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white text-[12px] font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isAnalyzing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Analyzing...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    <span>{differences.length > 0 ? 'Re-generate Analysis' : 'Start Analysis'}</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
-        )}
+            {isOwner && (
+              <AnalyzeActionBar
+                theme={theme}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+                onAnalyze={analyzeFidelity}
+                isAnalyzing={isAnalyzing}
+                hasBothImages={!!image && !!liveImage}
+                hasDifferences={differences.length > 0}
+              />
+            )}
       </>
     )}
   </div>
@@ -2981,7 +3171,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                             Round {round.roundNumber}
                           </span>
                           <span className="text-[8px] text-gray-500 truncate hidden sm:inline">
-                            {new Date(round.timestamp).toLocaleDateString()}
+                            {formatRoundDate(round)}
                           </span>
                         </div>
                         <div className="flex items-center gap-1">
