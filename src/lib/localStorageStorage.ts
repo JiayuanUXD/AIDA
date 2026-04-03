@@ -1,26 +1,47 @@
-// 远程文件存储服务，对接后端 API
+// 远程文件存储服务，对接后端 API (使用 Vercel Blob)
 const STORAGE_API = '/api/storage';
+
+// 缓存已上传文件的 URL
+const urlCache = new Map<string, string>();
 
 class RemoteStorageService {
   // 上传字符串（如 base64 图片）
-  async uploadString(path: string, data: string, format: string = 'data_url'): Promise<void> {
-    await fetch(`${STORAGE_API}/upload`, {
+  async uploadString(path: string, data: string, format: string = 'data_url'): Promise<string> {
+    const response = await fetch(`${STORAGE_API}/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, data })
     });
+    
+    if (!response.ok) {
+      throw new Error('Failed to upload file');
+    }
+    
+    const result = await response.json();
+    // 缓存 Blob URL
+    if (result.url) {
+      urlCache.set(path, result.url);
+    }
+    return result.url || '';
   }
 
   // 获取下载 URL
   async getDownloadURL(path: string): Promise<string> {
+    // 先检查缓存
+    const cachedUrl = urlCache.get(path);
+    if (cachedUrl) {
+      return cachedUrl;
+    }
+    
     const fileName = path.replace(/\//g, '_');
-    // 直接返回后端的静态文件路径
+    // 返回后端的文件路径（会重定向到 Blob URL）
     return `${STORAGE_API}/file/${fileName}`;
   }
 
   // 删除文件
   async deleteFile(path: string): Promise<void> {
-    // 后端暂未实现删除文件接口，留空
+    // 从缓存中删除
+    urlCache.delete(path);
     console.log('Delete file not implemented on server:', path);
   }
 }

@@ -654,17 +654,17 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
       let finalImageUrl = image;
       let finalLiveImageUrl = liveImage;
 
-      // Upload to Firebase Storage if it's a base64 string
+      // Upload to Vercel Blob if it's a base64 string
       if (image && image.startsWith('data:image')) {
           const imageRef = ref(null, `projects/${projectId}/design_${Date.now()}.jpg`);
-          await uploadString(imageRef, image, 'data_url');
-          finalImageUrl = await getDownloadURL(imageRef);
+          const uploadedUrl = await uploadString(imageRef, image, 'data_url');
+          finalImageUrl = uploadedUrl || await getDownloadURL(imageRef);
         }
 
         if (liveImage && liveImage.startsWith('data:image')) {
           const liveImageRef = ref(null, `projects/${projectId}/build_${Date.now()}.jpg`);
-          await uploadString(liveImageRef, liveImage, 'data_url');
-          finalLiveImageUrl = await getDownloadURL(liveImageRef);
+          const uploadedLiveUrl = await uploadString(liveImageRef, liveImage, 'data_url');
+          finalLiveImageUrl = uploadedLiveUrl || await getDownloadURL(liveImageRef);
         }
 
       // Create a small thumbnail for the dashboard

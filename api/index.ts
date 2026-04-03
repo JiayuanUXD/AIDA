@@ -5,9 +5,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
-
-import fs from "fs/promises";
-import { existsSync, mkdirSync } from "fs";
+import { put, list, del } from "@vercel/blob";
 
 dotenv.config();
 
@@ -17,36 +15,61 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
+// Blob storage helpers for JSON data
+const getCollectionBlobPath = (collection: string) => `data/${collection}.json`;
 
-// Ensure data directories exist
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR);
-if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR);
-
-// JSON DB Helpers
-const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
-
-const readCollection = async (collection: string) => {
+const readCollection = async (collection: string): Promise<any[]> => {
   try {
-    const filePath = getDbPath(collection);
-    if (!existsSync(filePath)) return [];
-    const content = await fs.readFile(filePath, "utf-8");
-    return JSON.parse(content);
+    const blobPath = getCollectionBlobPath(collection);
+    const { blobs } = await list({ prefix: blobPath });
+    
+    if (blobs.length === 0) return [];
+    
+    // Get the latest blob
+    const latestBlob = blobs.sort((a, b) => 
+      new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+    )[0];
+    
+    const response = await fetch(latestBlob.url);
+    if (!response.ok) return [];
+    
+    const data = await response.json();
+    return Array.isArray(data) ? data : [];
   } catch (err) {
     console.error(`Error reading collection ${collection}:`, err);
     return [];
   }
 };
 
-const writeCollection = async (collection: string, data: any[]) => {
-  const filePath = getDbPath(collection);
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+const writeCollection = async (collection: string, data: any[]): Promise<void> => {
+  try {
+    const blobPath = getCollectionBlobPath(collection);
+    
+    // Delete old blobs for this collection first
+    const { blobs } = await list({ prefix: blobPath });
+    for (const blob of blobs) {
+      try {
+        await del(blob.url);
+      } catch (e) {
+        console.error(`Failed to delete old blob ${blob.url}:`, e);
+      }
+    }
+    
+    // Write new data
+    await put(blobPath, JSON.stringify(data, null, 2), {
+      access: 'public',
+      contentType: 'application/json',
+    });
+  } catch (err) {
+    console.error(`Error writing collection ${collection}:`, err);
+    throw err;
+  }
 };
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok", env: process.env.NODE_ENV, vercel: !!process.env.VERCEL });
@@ -69,89 +92,130 @@ app.get("/api/config", (req, res) => {
 
 // --- DB Endpoints ---
 app.get("/api/db/:collection", async (req, res) => {
-  const data = await readCollection(req.params.collection);
-  res.json(data);
+  try {
+    const data = await readCollection(req.params.collection);
+    res.json(data);
+  } catch (err) {
+    console.error("Error in GET /api/db/:collection:", err);
+    res.status(500).json({ error: "Failed to read collection" });
+  }
 });
 
 app.get("/api/db/:collection/:id", async (req, res) => {
-  const data = await readCollection(req.params.collection);
-  const doc = data.find((d: any) => d.id === req.params.id);
-  if (!doc) return res.status(404).json({ error: "Not found" });
-  res.json(doc);
+  try {
+    const data = await readCollection(req.params.collection);
+    const doc = data.find((d: any) => d.id === req.params.id);
+    if (!doc) return res.status(404).json({ error: "Not found" });
+    res.json(doc);
+  } catch (err) {
+    console.error("Error in GET /api/db/:collection/:id:", err);
+    res.status(500).json({ error: "Failed to read document" });
+  }
 });
 
 app.post("/api/db/:collection", async (req, res) => {
-  const data = await readCollection(req.params.collection);
-  const newDoc = {
-    ...req.body,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
-  data.push(newDoc);
-  await writeCollection(req.params.collection, data);
-  res.json(newDoc);
+  try {
+    const data = await readCollection(req.params.collection);
+    const newDoc = {
+      ...req.body,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    data.push(newDoc);
+    await writeCollection(req.params.collection, data);
+    res.json(newDoc);
+  } catch (err) {
+    console.error("Error in POST /api/db/:collection:", err);
+    res.status(500).json({ error: "Failed to create document" });
+  }
 });
 
 app.put("/api/db/:collection/:id", async (req, res) => {
-  const data = await readCollection(req.params.collection);
-  const index = data.findIndex((d: any) => d.id === req.params.id);
-  if (index === -1) {
-    const newDoc = { ...req.body, id: req.params.id, updatedAt: Date.now() };
-    data.push(newDoc);
+  try {
+    const data = await readCollection(req.params.collection);
+    const index = data.findIndex((d: any) => d.id === req.params.id);
+    if (index === -1) {
+      const newDoc = { ...req.body, id: req.params.id, updatedAt: Date.now() };
+      data.push(newDoc);
+      await writeCollection(req.params.collection, data);
+      return res.json(newDoc);
+    }
+    data[index] = { ...data[index], ...req.body, updatedAt: Date.now() };
     await writeCollection(req.params.collection, data);
-    return res.json(newDoc);
+    res.json(data[index]);
+  } catch (err) {
+    console.error("Error in PUT /api/db/:collection/:id:", err);
+    res.status(500).json({ error: "Failed to update document" });
   }
-  data[index] = { ...data[index], ...req.body, updatedAt: Date.now() };
-  await writeCollection(req.params.collection, data);
-  res.json(data[index]);
 });
 
 app.delete("/api/db/:collection/:id", async (req, res) => {
-  const data = await readCollection(req.params.collection);
-  const filtered = data.filter((d: any) => d.id !== req.params.id);
-  await writeCollection(req.params.collection, filtered);
-  res.json({ success: true });
+  try {
+    const data = await readCollection(req.params.collection);
+    const filtered = data.filter((d: any) => d.id !== req.params.id);
+    await writeCollection(req.params.collection, filtered);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Error in DELETE /api/db/:collection/:id:", err);
+    res.status(500).json({ error: "Failed to delete document" });
+  }
 });
 
-// --- Storage Endpoints ---
+// --- Storage Endpoints using Vercel Blob ---
 app.post("/api/storage/upload", async (req, res) => {
-  const { path: filePath, data } = req.body;
-  if (!filePath || !data) return res.status(400).json({ error: "Path and data required" });
-  
-  // Safe filename
-  const fileName = filePath.replace(/\//g, '_');
-  const fullPath = path.join(UPLOADS_DIR, fileName);
-  await fs.writeFile(fullPath, data, "utf-8");
-  res.json({ success: true, url: `/api/storage/file/${fileName}` });
+  try {
+    const { path: filePath, data } = req.body;
+    if (!filePath || !data) return res.status(400).json({ error: "Path and data required" });
+    
+    // Safe filename
+    const fileName = filePath.replace(/\//g, '_');
+    const blobPath = `uploads/${fileName}`;
+    
+    // If data is a base64 data URL, convert to buffer
+    let content: Buffer | string = data;
+    let contentType = 'text/plain';
+    
+    if (data.startsWith('data:')) {
+      const match = data.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
+        contentType = match[1];
+        content = Buffer.from(match[2], 'base64');
+      }
+    }
+    
+    const blob = await put(blobPath, content, {
+      access: 'public',
+      contentType,
+    });
+    
+    res.json({ success: true, url: blob.url });
+  } catch (err) {
+    console.error("Error in POST /api/storage/upload:", err);
+    res.status(500).json({ error: "Failed to upload file" });
+  }
 });
 
 app.get("/api/storage/file/:filename", async (req, res) => {
   try {
     const fileName = req.params.filename;
-    const fullPath = path.join(UPLOADS_DIR, fileName);
-    if (!existsSync(fullPath)) return res.status(404).send("File not found");
+    const blobPath = `uploads/${fileName}`;
     
-    // Read the stored content (which is a Data URL string)
-    const content = await fs.readFile(fullPath, "utf-8");
+    // Find the blob
+    const { blobs } = await list({ prefix: blobPath });
     
-    // If it's a Data URL, parse and send as binary
-    if (content.startsWith('data:')) {
-      const match = content.match(/^data:([^;]+);base64,(.+)$/);
-      if (match) {
-        const contentType = match[1];
-        const base64Data = match[2];
-        const buffer = Buffer.from(base64Data, 'base64');
-        res.setHeader('Content-Type', contentType);
-        // Set cache control for better performance
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
-        return res.send(buffer);
-      }
+    if (blobs.length === 0) {
+      return res.status(404).send("File not found");
     }
     
-    // Fallback to sending as is (text/plain)
-    res.send(content);
+    // Get the latest blob
+    const latestBlob = blobs.sort((a, b) => 
+      new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+    )[0];
+    
+    // Redirect to blob URL
+    res.redirect(latestBlob.url);
   } catch (err) {
-    console.error("Error serving local file:", err);
+    console.error("Error serving file:", err);
     res.status(500).send("Read error");
   }
 });
@@ -496,7 +560,7 @@ app.post("/api/analyze/ui", async (req, res) => {
       } else {
         result = content;
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("AI Response Parsing Failed!");
       console.error("--- RAW CONTENT ---");
       console.log(content);
