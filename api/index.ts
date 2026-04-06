@@ -17,22 +17,56 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+const isVercel = !!process.env.VERCEL;
+
 const DATA_DIR = path.join(process.cwd(), "data");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 
-// Ensure data directories exist
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR);
-if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR);
+// On Vercel, filesystem is not reliable (and often read-only), so we only
+// create local directories during local development.
+if (!isVercel) {
+  // Ensure data directories exist
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR);
+  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR);
+}
 
-// JSON DB Helpers
-const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
+// JSON DB Helpers (local file system + Vercel KV)
+const getDbKey = (collection: string) => `db:${collection}`;
+
+const parseDataUrl = (input: string) => {
+  // Expected: data:<mimeType>;base64,<base64>
+  if (input.startsWith("data:")) {
+    const match = input.match(/^data:([^;]+);base64,(.+)$/);
+    if (match) {
+      return {
+        contentType: match[1],
+        buffer: Buffer.from(match[2], "base64"),
+      };
+    }
+  }
+
+  // Fallback: treat as raw base64.
+  return {
+    contentType: "application/octet-stream",
+    buffer: Buffer.from(input, "base64"),
+  };
+};
 
 const readCollection = async (collection: string) => {
   try {
-    const filePath = getDbPath(collection);
-    if (!existsSync(filePath)) return [];
-    const content = await fs.readFile(filePath, "utf-8");
-    return JSON.parse(content);
+    if (isVercel) {
+      const { kv } = await import("@vercel/kv");
+      const raw = await kv.get<string>(getDbKey(collection));
+      if (!raw) return [];
+
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      return Array.isArray(parsed) ? parsed : [];
+    } else {
+      const filePath = path.join(DATA_DIR, `${collection}.json`);
+      if (!existsSync(filePath)) return [];
+      const content = await fs.readFile(filePath, "utf-8");
+      return JSON.parse(content);
+    }
   } catch (err) {
     console.error(`Error reading collection ${collection}:`, err);
     return [];
@@ -40,8 +74,13 @@ const readCollection = async (collection: string) => {
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
-  const filePath = getDbPath(collection);
-  await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+  if (isVercel) {
+    const { kv } = await import("@vercel/kv");
+    await kv.set(getDbKey(collection), JSON.stringify(data));
+  } else {
+    const filePath = path.join(DATA_DIR, `${collection}.json`);
+    await fs.writeFile(filePath, JSON.stringify(data, null, 2), "utf-8");
+  }
 };
 
 app.use(cors());
@@ -119,7 +158,26 @@ app.post("/api/storage/upload", async (req, res) => {
   if (!filePath || !data) return res.status(400).json({ error: "Path and data required" });
   
   // Safe filename
-  const fileName = filePath.replace(/\//g, '_');
+  const fileName = String(filePath).replace(/[\\/]/g, '_');
+
+  // In Vercel, store uploads in Blob and use KV to map filename -> public URL.
+  if (isVercel) {
+    const { put } = await import("@vercel/blob");
+    const { kv } = await import("@vercel/kv");
+
+    const { contentType, buffer } = parseDataUrl(String(data));
+    const blobName = `uploads/${fileName}`;
+
+    const blob = await put(blobName, buffer, {
+      contentType,
+      access: "public",
+    });
+
+    await kv.set(`storage:${fileName}`, blob.url);
+    return res.json({ success: true, url: `/api/storage/file/${fileName}` });
+  }
+
+  // Local development: keep using filesystem-based uploads.
   const fullPath = path.join(UPLOADS_DIR, fileName);
   await fs.writeFile(fullPath, data, "utf-8");
   res.json({ success: true, url: `/api/storage/file/${fileName}` });
@@ -128,6 +186,17 @@ app.post("/api/storage/upload", async (req, res) => {
 app.get("/api/storage/file/:filename", async (req, res) => {
   try {
     const fileName = req.params.filename;
+
+    // In Vercel, redirect to the public blob URL.
+    if (isVercel) {
+      const { kv } = await import("@vercel/kv");
+      const imageUrl = await kv.get<string>(`storage:${fileName}`);
+      if (!imageUrl) return res.status(404).send("File not found");
+
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      return res.redirect(302, imageUrl);
+    }
+
     const fullPath = path.join(UPLOADS_DIR, fileName);
     if (!existsSync(fullPath)) return res.status(404).send("File not found");
     
