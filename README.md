@@ -44,4 +44,4 @@ View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53
   - 修复仅浏览 Round 也触发自动保存的问题（指纹口径统一）。
   - 修复 Round 卡片排序异常与 `Invalid Date` 展示问题。
 - 开发运行改进：
-  - 修复 `dev:opt` 脚本，避免出现 `data-opt/data` 嵌套拷贝导致的数据混乱。
+  - 修复 `dev:opt` 脚本，避免出现 `data-opt/data` 嵌套拷贝导致的数据混乱
