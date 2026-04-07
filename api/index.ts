@@ -15,21 +15,23 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
-// Check if Blob storage is available (has token)
-const hasBlobToken = !!process.env.BLOB_READ_WRITE_TOKEN;
-console.log(`[Storage] Blob token available: ${hasBlobToken}`);
-
 // In-memory fallback storage for development
 const memoryStorage: Record<string, any[]> = {};
 const memoryFiles: Record<string, { data: string; contentType: string }> = {};
+
+// Function to check if Blob storage is available (checks at runtime)
+const isBlobAvailable = (): boolean => {
+  const token = process.env.BLOB_READ_WRITE_TOKEN;
+  return typeof token === 'string' && token.length > 0;
+};
 
 // Blob storage helpers for JSON data
 const getCollectionBlobPath = (collection: string) => `data/${collection}.json`;
 
 const readCollection = async (collection: string): Promise<any[]> => {
-  // Use memory storage if no blob token
-  if (!hasBlobToken) {
-    console.log(`[Storage] Using memory storage for reading collection: ${collection}`);
+  // Use memory storage if no blob token - check at runtime
+  if (!isBlobAvailable()) {
+    console.log(`[v0] Using memory storage for reading collection: ${collection}`);
     return memoryStorage[collection] || [];
   }
   
@@ -56,9 +58,9 @@ const readCollection = async (collection: string): Promise<any[]> => {
 };
 
 const writeCollection = async (collection: string, data: any[]): Promise<void> => {
-  // Use memory storage if no blob token
-  if (!hasBlobToken) {
-    console.log(`[Storage] Using memory storage for writing collection: ${collection}`);
+  // Use memory storage if no blob token - check at runtime
+  if (!isBlobAvailable()) {
+    console.log(`[v0] Using memory storage for writing collection: ${collection}`);
     memoryStorage[collection] = data;
     return;
   }
@@ -202,9 +204,9 @@ app.post("/api/storage/upload", async (req, res) => {
       }
     }
     
-    // Use memory storage if no blob token
-    if (!hasBlobToken) {
-      console.log(`[Storage] Using memory storage for file upload: ${fileName}`);
+    // Use memory storage if no blob token - check at runtime
+    if (!isBlobAvailable()) {
+      console.log(`[v0] Using memory storage for file upload: ${fileName}`);
       memoryFiles[fileName] = { data, contentType };
       // Return a local URL that points to our file endpoint
       const localUrl = `/api/storage/file/${encodeURIComponent(fileName)}`;
@@ -236,8 +238,8 @@ app.get("/api/storage/file/:filename", async (req, res) => {
   try {
     const fileName = req.params.filename;
     
-    // Use memory storage if no blob token
-    if (!hasBlobToken) {
+    // Use memory storage if no blob token - check at runtime
+    if (!isBlobAvailable()) {
       const file = memoryFiles[fileName];
       if (!file) {
         return res.status(404).send("File not found");
