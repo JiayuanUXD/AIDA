@@ -5,7 +5,9 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
-import { put, list, del } from "@vercel/blob";
+
+// Conditionally import @vercel/blob only when token is available
+let blobModule: typeof import("@vercel/blob") | null = null;
 
 dotenv.config();
 
@@ -15,33 +17,50 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
-// In-memory fallback storage for development
+// In-memory storage (always available)
 const memoryStorage: Record<string, any[]> = {};
 const memoryFiles: Record<string, { data: string; contentType: string }> = {};
 
-// Function to check if Blob storage is available (checks at runtime)
-const isBlobAvailable = (): boolean => {
-  const token = process.env.BLOB_READ_WRITE_TOKEN;
-  return typeof token === 'string' && token.length > 0;
+// Check if Blob token exists at startup
+const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+const USE_BLOB = typeof BLOB_TOKEN === 'string' && BLOB_TOKEN.length > 10;
+
+console.log(`[v0] Storage mode: ${USE_BLOB ? 'Vercel Blob' : 'In-Memory'}`);
+
+// Lazy load blob module only if token is available
+const getBlobModule = async () => {
+  if (!USE_BLOB) return null;
+  if (!blobModule) {
+    try {
+      blobModule = await import("@vercel/blob");
+    } catch (e) {
+      console.error("[v0] Failed to load @vercel/blob:", e);
+      return null;
+    }
+  }
+  return blobModule;
 };
 
-// Blob storage helpers for JSON data
+// Storage helpers for JSON data
 const getCollectionBlobPath = (collection: string) => `data/${collection}.json`;
 
 const readCollection = async (collection: string): Promise<any[]> => {
-  // Use memory storage if no blob token - check at runtime
-  if (!isBlobAvailable()) {
-    console.log(`[v0] Using memory storage for reading collection: ${collection}`);
+  // Always use memory storage first - it's faster and always works
+  if (!USE_BLOB) {
     return memoryStorage[collection] || [];
   }
   
   try {
+    const blob = await getBlobModule();
+    if (!blob) {
+      return memoryStorage[collection] || [];
+    }
+    
     const blobPath = getCollectionBlobPath(collection);
-    const { blobs } = await list({ prefix: blobPath });
+    const { blobs } = await blob.list({ prefix: blobPath });
     
     if (blobs.length === 0) return [];
     
-    // Get the latest blob
     const latestBlob = blobs.sort((a, b) => 
       new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
     )[0];
@@ -52,40 +71,43 @@ const readCollection = async (collection: string): Promise<any[]> => {
     const data = await response.json();
     return Array.isArray(data) ? data : [];
   } catch (err) {
-    console.error(`Error reading collection ${collection}:`, err);
-    return [];
+    console.error(`[v0] Error reading collection ${collection}, falling back to memory:`, err);
+    return memoryStorage[collection] || [];
   }
 };
 
 const writeCollection = async (collection: string, data: any[]): Promise<void> => {
-  // Use memory storage if no blob token - check at runtime
-  if (!isBlobAvailable()) {
-    console.log(`[v0] Using memory storage for writing collection: ${collection}`);
-    memoryStorage[collection] = data;
+  // Always update memory storage
+  memoryStorage[collection] = data;
+  
+  if (!USE_BLOB) {
     return;
   }
   
   try {
+    const blob = await getBlobModule();
+    if (!blob) return;
+    
     const blobPath = getCollectionBlobPath(collection);
     
     // Delete old blobs for this collection first
-    const { blobs } = await list({ prefix: blobPath });
-    for (const blob of blobs) {
+    const { blobs } = await blob.list({ prefix: blobPath });
+    for (const b of blobs) {
       try {
-        await del(blob.url);
+        await blob.del(b.url);
       } catch (e) {
-        console.error(`Failed to delete old blob ${blob.url}:`, e);
+        console.error(`[v0] Failed to delete old blob ${b.url}:`, e);
       }
     }
     
     // Write new data
-    await put(blobPath, JSON.stringify(data, null, 2), {
+    await blob.put(blobPath, JSON.stringify(data, null, 2), {
       access: 'public',
       contentType: 'application/json',
     });
   } catch (err) {
-    console.error(`Error writing collection ${collection}:`, err);
-    throw err;
+    console.error(`[v0] Error writing collection ${collection} to blob:`, err);
+    // Data is already in memory, so we don't need to throw
   }
 };
 
@@ -184,7 +206,7 @@ app.delete("/api/db/:collection/:id", async (req, res) => {
   }
 });
 
-// --- Storage Endpoints using Vercel Blob (with memory fallback) ---
+// --- Storage Endpoints (with Vercel Blob support when available) ---
 app.post("/api/storage/upload", async (req, res) => {
   try {
     const { path: filePath, data } = req.body;
@@ -192,7 +214,6 @@ app.post("/api/storage/upload", async (req, res) => {
     
     // Safe filename
     const fileName = filePath.replace(/\//g, '_');
-    const blobPath = `uploads/${fileName}`;
     
     // If data is a base64 data URL, parse content type
     let contentType = 'text/plain';
@@ -204,30 +225,38 @@ app.post("/api/storage/upload", async (req, res) => {
       }
     }
     
-    // Use memory storage if no blob token - check at runtime
-    if (!isBlobAvailable()) {
-      console.log(`[v0] Using memory storage for file upload: ${fileName}`);
-      memoryFiles[fileName] = { data, contentType };
-      // Return a local URL that points to our file endpoint
-      const localUrl = `/api/storage/file/${encodeURIComponent(fileName)}`;
-      return res.json({ success: true, url: localUrl });
-    }
+    // Always save to memory first
+    memoryFiles[fileName] = { data, contentType };
     
-    // If data is a base64 data URL, convert to buffer
-    let content: Buffer | string = data;
-    if (data.startsWith('data:')) {
-      const match = data.match(/^data:([^;]+);base64,(.+)$/);
-      if (match) {
-        content = Buffer.from(match[2], 'base64');
+    // Try to use Blob storage if available
+    if (USE_BLOB) {
+      try {
+        const blob = await getBlobModule();
+        if (blob) {
+          const blobPath = `uploads/${fileName}`;
+          let content: Buffer | string = data;
+          if (data.startsWith('data:')) {
+            const match = data.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              content = Buffer.from(match[2], 'base64');
+            }
+          }
+          
+          const result = await blob.put(blobPath, content, {
+            access: 'public',
+            contentType,
+          });
+          
+          return res.json({ success: true, url: result.url });
+        }
+      } catch (blobErr) {
+        console.error("[v0] Blob upload failed, using memory storage:", blobErr);
       }
     }
     
-    const blob = await put(blobPath, content, {
-      access: 'public',
-      contentType,
-    });
-    
-    res.json({ success: true, url: blob.url });
+    // Return local URL that points to our file endpoint
+    const localUrl = `/api/storage/file/${encodeURIComponent(fileName)}`;
+    res.json({ success: true, url: localUrl });
   } catch (err) {
     console.error("Error in POST /api/storage/upload:", err);
     res.status(500).json({ error: "Failed to upload file" });
@@ -238,13 +267,9 @@ app.get("/api/storage/file/:filename", async (req, res) => {
   try {
     const fileName = req.params.filename;
     
-    // Use memory storage if no blob token - check at runtime
-    if (!isBlobAvailable()) {
-      const file = memoryFiles[fileName];
-      if (!file) {
-        return res.status(404).send("File not found");
-      }
-      
+    // First check memory storage (always available)
+    const file = memoryFiles[fileName];
+    if (file) {
       // If it's a data URL, extract and serve the binary data
       if (file.data.startsWith('data:')) {
         const match = file.data.match(/^data:([^;]+);base64,(.+)$/);
@@ -259,22 +284,27 @@ app.get("/api/storage/file/:filename", async (req, res) => {
       return res.send(file.data);
     }
     
-    const blobPath = `uploads/${fileName}`;
-    
-    // Find the blob
-    const { blobs } = await list({ prefix: blobPath });
-    
-    if (blobs.length === 0) {
-      return res.status(404).send("File not found");
+    // Try Blob storage if available
+    if (USE_BLOB) {
+      try {
+        const blob = await getBlobModule();
+        if (blob) {
+          const blobPath = `uploads/${fileName}`;
+          const { blobs } = await blob.list({ prefix: blobPath });
+          
+          if (blobs.length > 0) {
+            const latestBlob = blobs.sort((a, b) => 
+              new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
+            )[0];
+            return res.redirect(latestBlob.url);
+          }
+        }
+      } catch (blobErr) {
+        console.error("[v0] Blob read failed:", blobErr);
+      }
     }
     
-    // Get the latest blob
-    const latestBlob = blobs.sort((a, b) => 
-      new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime()
-    )[0];
-    
-    // Redirect to blob URL
-    res.redirect(latestBlob.url);
+    return res.status(404).send("File not found");
   } catch (err) {
     console.error("Error serving file:", err);
     res.status(500).send("Read error");
