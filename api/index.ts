@@ -25,7 +25,7 @@ const memoryFiles: Record<string, { data: string; contentType: string }> = {};
 const BLOB_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
 const USE_BLOB = typeof BLOB_TOKEN === 'string' && BLOB_TOKEN.length > 10;
 
-console.log(`[v0] Storage mode: ${USE_BLOB ? 'Vercel Blob' : 'In-Memory'}`);
+console.log(`[v0] Storage mode: ${USE_BLOB ? 'Vercel Blob' : 'In-Memory'} (v2)`);
 
 // Lazy load blob module only if token is available
 const getBlobModule = async () => {
