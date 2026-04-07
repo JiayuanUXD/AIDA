@@ -15,10 +15,24 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+// Check if Blob storage is available (has token)
+const hasBlobToken = !!process.env.BLOB_READ_WRITE_TOKEN;
+console.log(`[Storage] Blob token available: ${hasBlobToken}`);
+
+// In-memory fallback storage for development
+const memoryStorage: Record<string, any[]> = {};
+const memoryFiles: Record<string, { data: string; contentType: string }> = {};
+
 // Blob storage helpers for JSON data
 const getCollectionBlobPath = (collection: string) => `data/${collection}.json`;
 
 const readCollection = async (collection: string): Promise<any[]> => {
+  // Use memory storage if no blob token
+  if (!hasBlobToken) {
+    console.log(`[Storage] Using memory storage for reading collection: ${collection}`);
+    return memoryStorage[collection] || [];
+  }
+  
   try {
     const blobPath = getCollectionBlobPath(collection);
     const { blobs } = await list({ prefix: blobPath });
@@ -42,6 +56,13 @@ const readCollection = async (collection: string): Promise<any[]> => {
 };
 
 const writeCollection = async (collection: string, data: any[]): Promise<void> => {
+  // Use memory storage if no blob token
+  if (!hasBlobToken) {
+    console.log(`[Storage] Using memory storage for writing collection: ${collection}`);
+    memoryStorage[collection] = data;
+    return;
+  }
+  
   try {
     const blobPath = getCollectionBlobPath(collection);
     
@@ -161,7 +182,7 @@ app.delete("/api/db/:collection/:id", async (req, res) => {
   }
 });
 
-// --- Storage Endpoints using Vercel Blob ---
+// --- Storage Endpoints using Vercel Blob (with memory fallback) ---
 app.post("/api/storage/upload", async (req, res) => {
   try {
     const { path: filePath, data } = req.body;
@@ -171,14 +192,30 @@ app.post("/api/storage/upload", async (req, res) => {
     const fileName = filePath.replace(/\//g, '_');
     const blobPath = `uploads/${fileName}`;
     
-    // If data is a base64 data URL, convert to buffer
-    let content: Buffer | string = data;
+    // If data is a base64 data URL, parse content type
     let contentType = 'text/plain';
     
     if (data.startsWith('data:')) {
-      const match = data.match(/^data:([^;]+);base64,(.+)$/);
+      const match = data.match(/^data:([^;]+);base64,/);
       if (match) {
         contentType = match[1];
+      }
+    }
+    
+    // Use memory storage if no blob token
+    if (!hasBlobToken) {
+      console.log(`[Storage] Using memory storage for file upload: ${fileName}`);
+      memoryFiles[fileName] = { data, contentType };
+      // Return a local URL that points to our file endpoint
+      const localUrl = `/api/storage/file/${encodeURIComponent(fileName)}`;
+      return res.json({ success: true, url: localUrl });
+    }
+    
+    // If data is a base64 data URL, convert to buffer
+    let content: Buffer | string = data;
+    if (data.startsWith('data:')) {
+      const match = data.match(/^data:([^;]+);base64,(.+)$/);
+      if (match) {
         content = Buffer.from(match[2], 'base64');
       }
     }
@@ -198,6 +235,28 @@ app.post("/api/storage/upload", async (req, res) => {
 app.get("/api/storage/file/:filename", async (req, res) => {
   try {
     const fileName = req.params.filename;
+    
+    // Use memory storage if no blob token
+    if (!hasBlobToken) {
+      const file = memoryFiles[fileName];
+      if (!file) {
+        return res.status(404).send("File not found");
+      }
+      
+      // If it's a data URL, extract and serve the binary data
+      if (file.data.startsWith('data:')) {
+        const match = file.data.match(/^data:([^;]+);base64,(.+)$/);
+        if (match) {
+          const buffer = Buffer.from(match[2], 'base64');
+          res.setHeader('Content-Type', match[1]);
+          return res.send(buffer);
+        }
+      }
+      
+      res.setHeader('Content-Type', file.contentType);
+      return res.send(file.data);
+    }
+    
     const blobPath = `uploads/${fileName}`;
     
     // Find the blob
