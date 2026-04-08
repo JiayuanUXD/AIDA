@@ -880,7 +880,7 @@ async function startServer() {
       const vite = await createViteServer({
         server: { 
           middlewareMode: true,
-          hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 } // 使用不同端口避免 HMR 冲突
+          hmr: process.env.DISABLE_HMR === "true" ? false : undefined // Let Vite choose its own HMR port dynamically
         },
         appType: "spa",
       });
@@ -895,7 +895,27 @@ async function startServer() {
       if (err.code === 'EADDRINUSE') {
         console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
         process.exit(1);
+      } else {
+        console.error('Server error:', err);
+        process.exit(1);
       }
+    });
+
+    // Graceful shutdown
+    process.on('SIGTERM', () => {
+      console.log('SIGTERM received, closing server gracefully...');
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
+    });
+
+    process.on('SIGINT', () => {
+      console.log('SIGINT received, closing server gracefully...');
+      server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+      });
     });
   }
 }
