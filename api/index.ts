@@ -900,6 +900,9 @@ async function startServer() {
   }
 }
 
-startServer();
+// Only start server in development (not in Vercel serverless)
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 export default app;

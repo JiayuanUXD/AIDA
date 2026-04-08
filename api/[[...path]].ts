@@ -1,13 +1,28 @@
-import app from "./index.ts";
+import app from "./index.js";
 
 export default async function handler(req: any, res: any) {
-  // Express app does not return a promise; wait until the response is done.
+  // For Vercel serverless, we need to handle the request/response
   return new Promise<void>((resolve, reject) => {
-    res.once("finish", resolve);
-    res.once("close", resolve);
+    // Attach handlers before calling app
+    const onFinish = () => {
+      res.removeListener("close", onClose);
+      resolve();
+    };
+    
+    const onClose = () => {
+      res.removeListener("finish", onFinish);
+      resolve();
+    };
+
+    res.once("finish", onFinish);
+    res.once("close", onClose);
+
     try {
-      app(req, res);
+      // Call the Express app with the request/response
+      app.handle ? app.handle(req, res) : app(req, res);
     } catch (err) {
+      res.removeListener("finish", onFinish);
+      res.removeListener("close", onClose);
       reject(err);
     }
   });
