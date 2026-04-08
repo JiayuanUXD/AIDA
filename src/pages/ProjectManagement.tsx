@@ -182,11 +182,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
     try {
       const projectId = Date.now().toString(36) + Math.random().toString(36).substr(2);
 
-      // Navigate immediately
       setShowCreateModal(false);
-      navigate(`/checker/${projectId}`);
-
-      // Perform the write in the background
       await setDoc(doc('projects', projectId), {
         name: newProjectName,
         updatedAt: Date.now(),
@@ -195,6 +191,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
         category: 'All projects',
         members: []
       });
+      navigate(`/checker/${projectId}`);
     } catch (error) {
       console.error("Error creating project:", error);
     }

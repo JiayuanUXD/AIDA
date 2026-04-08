@@ -444,6 +444,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     if (projectId) {
       const loadProject = async () => {
         setIsLoading(true);
+        setIsOwner(true);
         try {
           const docSnap = await getDoc(doc('projects', projectId));
           if (docSnap.exists()) {
@@ -481,6 +482,8 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
             lastSavedDataRef.current = loadedFingerprint;
             setLastSavedAt(data.updatedAt ?? data.analysisData?.timestamp ?? null);
             setSaveStatus('saved');
+          } else {
+            setSaveStatus('unsaved');
           }
         } catch (error) {
           console.error("Error loading project:", error);

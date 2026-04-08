@@ -19,15 +19,16 @@ View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53
 3. Run the app:
    `npm run dev`
 
-## Deploy to Vercel (Blob + Local Fallback)
+## Deploy to Vercel (Supabase DB + Supabase Storage)
 
-### 1. Create Blob and set env vars in Vercel
+### 1. Create Supabase table and set env vars in Vercel
 
 In your Vercel project, add these Environment Variables:
 
-- `BLOB_READ_WRITE_TOKEN` (required for persistent cloud storage)
-- `BLOB_DB_PREFIX` (optional, default: `db`)
-- `BLOB_UPLOADS_PREFIX` (optional, default: `uploads`)
+- `SUPABASE_URL` (required for persistent DB and file storage)
+- `SUPABASE_SERVICE_ROLE_KEY` (required for server-side DB/file read-write)
+- `SUPABASE_DB_TABLE` (optional, default: `app_collections`)
+- `SUPABASE_STORAGE_BUCKET` (optional, default: `uploads`)
 
 Also set your existing keys as needed:
 
@@ -39,10 +40,24 @@ Also set your existing keys as needed:
 
 ### 2. Data behavior
 
-- On Vercel with `BLOB_READ_WRITE_TOKEN`: database JSON and uploaded files are stored in Vercel Blob.
-- In local development without `BLOB_READ_WRITE_TOKEN`: server automatically falls back to local filesystem (`data/` and `data/uploads/`).
+- With Supabase env configured: `/api/db/*` data is stored in Supabase table.
+- Uploaded files are stored in Supabase Storage bucket.
+- If Supabase is not configured, DB/file storage falls back to local filesystem.
 
-### 3. Deploy
+### 3. Supabase SQL (run once)
+
+```sql
+create table if not exists public.app_collections (
+  collection text primary key,
+  data jsonb not null default '[]'::jsonb,
+  updated_at timestamptz not null default now()
+);
+```
+
+Also create a Storage bucket (default bucket name: `uploads`).
+If you changed `SUPABASE_DB_TABLE`, create that table with the same schema.
+
+### 4. Deploy
 
 1. Push to your GitHub repository.
 2. Import the repo in Vercel.
@@ -50,6 +65,21 @@ Also set your existing keys as needed:
 4. Deploy.
 
 ## 版本记录
+
+### 2026-04-08（精简版）
+
+- 存储方案升级为 Supabase：
+  - `/api/db/*` 数据改为 Supabase 表存储（默认表：`app_collections`）。
+  - `/api/storage/*` 图片/文件改为 Supabase Storage（默认 bucket：`uploads`）。
+  - 移除 Blob 依赖与配置说明，统一为 Supabase 配置。
+- 本地环境与 Vercel 对齐：
+  - 新增 `api/[[...path]].ts` 作为 API catch-all 入口。
+  - `vercel.json` API rewrite 指向 `api/[[...path]].ts`。
+  - 新增 `dev:vercel:opt` 脚本，便于本地模拟 Vercel 运行。
+- 环境变量加载优化：
+  - 后端改为先加载 `.env`，再用 `.env.local` 覆盖，避免本地密钥不生效。
+- 新建项目体验修复：
+  - 修复“新建项目后上传组件消失”问题（创建流程竞态 + owner 判定兜底）。
 
 ### 2026-04-03（精简版）
 
