@@ -902,7 +902,10 @@ async function startServer() {
 
 // Only start server in development (not in Vercel serverless)
 if (!process.env.VERCEL) {
-  startServer();
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
 }
 
 export default app;
