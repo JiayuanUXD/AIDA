@@ -19,6 +19,36 @@ View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53
 3. Run the app:
    `npm run dev`
 
+## Deploy to Vercel (Blob + Local Fallback)
+
+### 1. Create Blob and set env vars in Vercel
+
+In your Vercel project, add these Environment Variables:
+
+- `BLOB_READ_WRITE_TOKEN` (required for persistent cloud storage)
+- `BLOB_DB_PREFIX` (optional, default: `db`)
+- `BLOB_UPLOADS_PREFIX` (optional, default: `uploads`)
+
+Also set your existing keys as needed:
+
+- `GEMINI_API_KEY`
+- `FIGMA_ACCESS_TOKEN`
+- `APIYI_API_KEY`
+- `APIYI_MODEL_ID`
+- `APIYI_API_URL`
+
+### 2. Data behavior
+
+- On Vercel with `BLOB_READ_WRITE_TOKEN`: database JSON and uploaded files are stored in Vercel Blob.
+- In local development without `BLOB_READ_WRITE_TOKEN`: server automatically falls back to local filesystem (`data/` and `data/uploads/`).
+
+### 3. Deploy
+
+1. Push to your GitHub repository.
+2. Import the repo in Vercel.
+3. Configure the env vars above.
+4. Deploy.
+
 ## 版本记录
 
 ### 2026-04-03（精简版）
