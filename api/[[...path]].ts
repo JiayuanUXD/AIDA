@@ -1,4 +1,4 @@
-import app from "./index";
+import app from "./index.ts";
 
 export default async function handler(req: any, res: any) {
   // Express app does not return a promise; wait until the response is done.
@@ -12,4 +12,3 @@ export default async function handler(req: any, res: any) {
     }
   });
 }
-
