@@ -6,6 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
+import { list, put } from "@vercel/blob";
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -18,7 +19,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
-const isVercel = !!process.env.VERCEL;
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
 const DATA_DIR = path.join(process.cwd(), DATA_DIR_NAME);
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
@@ -34,53 +34,46 @@ const ALLOWED_PROXY_HOSTS = [
   "googleusercontent.com",
   "githubusercontent.com",
 ];
+const BLOB_DB_PREFIX = (process.env.BLOB_DB_PREFIX || "db").replace(/^\/+|\/+$/g, "");
+const BLOB_UPLOADS_PREFIX = (process.env.BLOB_UPLOADS_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
+const isBlobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
-// On Vercel, filesystem is not reliable (and often read-only), so we only
-// create local directories during local development.
-if (!isVercel) {
-  // Ensure data directories exist
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
-}
+// Ensure data directories exist
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 
-// JSON DB Helpers (local file system + Vercel KV)
-const getDbKey = (collection: string) => `db:${collection}`;
+// JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
+const getBlobDbPathname = (collection: string) => `${BLOB_DB_PREFIX}/${collection}.json`;
+const getBlobUploadPathname = (fileName: string) => `${BLOB_UPLOADS_PREFIX}/${fileName}`;
 
-const parseDataUrl = (input: string) => {
-  // Expected: data:<mimeType>;base64,<base64>
-  if (input.startsWith("data:")) {
-    const match = input.match(/^data:([^;]+);base64,(.+)$/);
-    if (match) {
-      return {
-        contentType: match[1],
-        buffer: Buffer.from(match[2], "base64"),
-      };
-    }
-  }
-
-  // Fallback: treat as raw base64.
-  return {
-    contentType: "application/octet-stream",
-    buffer: Buffer.from(input, "base64"),
-  };
+const getBlobByPathname = async (pathname: string) => {
+  const { blobs } = await list({ prefix: pathname, limit: 1000 });
+  return blobs.find((blob: any) => blob.pathname === pathname) || null;
 };
 
 const readCollection = async (collection: string) => {
-  try {
-    if (isVercel) {
-      const { kv } = await import("@vercel/kv");
-      const raw = await kv.get<string>(getDbKey(collection));
-      if (!raw) return [];
-
-      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return Array.isArray(parsed) ? parsed : [];
-    } else {
-      const filePath = path.join(DATA_DIR, `${collection}.json`);
-      if (!existsSync(filePath)) return [];
-      const content = await fs.readFile(filePath, "utf-8");
+  if (isBlobEnabled) {
+    try {
+      const pathname = getBlobDbPathname(collection);
+      const blob = await getBlobByPathname(pathname);
+      if (!blob) return [];
+      const response = await fetch(blob.url, { cache: "no-store" as RequestCache });
+      if (!response.ok) return [];
+      const content = await response.text();
+      if (!content.trim()) return [];
       return JSON.parse(content);
+    } catch (err) {
+      console.error(`Error reading blob collection ${collection}:`, err);
+      return [];
     }
+  }
+
+  try {
+    const filePath = getDbPath(collection);
+    if (!existsSync(filePath)) return [];
+    const content = await fs.readFile(filePath, "utf-8");
+    return JSON.parse(content);
   } catch (err) {
     if (err instanceof SyntaxError) {
       try {
@@ -96,9 +89,15 @@ const readCollection = async (collection: string) => {
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
-  if (isVercel) {
-    const { kv } = await import("@vercel/kv");
-    await kv.set(getDbKey(collection), JSON.stringify(data));
+  if (isBlobEnabled) {
+    const pathname = getBlobDbPathname(collection);
+    await put(pathname, JSON.stringify(data, null, 2), {
+      access: "public",
+      contentType: "application/json; charset=utf-8",
+      addRandomSuffix: false,
+      allowOverwrite: true,
+      cacheControlMaxAge: 60,
+    });
     return;
   }
 
@@ -232,45 +231,53 @@ app.post("/api/storage/upload", async (req, res) => {
   if (!filePath || !data) return res.status(400).json({ error: "Path and data required" });
   
   // Safe filename
-  const fileName = String(filePath).replace(/[\\/]/g, '_');
+  const fileName = filePath.replace(/\//g, '_');
+  if (isBlobEnabled) {
+    try {
+      let body: string | Buffer = data;
+      let contentType = "text/plain; charset=utf-8";
 
-  // In Vercel, store uploads in Blob and use KV to map filename -> public URL.
-  if (isVercel) {
-    const { put } = await import("@vercel/blob");
-    const { kv } = await import("@vercel/kv");
+      const match = typeof data === "string" ? data.match(/^data:([^;]+);base64,(.+)$/) : null;
+      if (match) {
+        contentType = match[1];
+        body = Buffer.from(match[2], "base64");
+      }
 
-    const { contentType, buffer } = parseDataUrl(String(data));
-    const blobName = `uploads/${fileName}`;
-
-    const blob = await put(blobName, buffer, {
-      contentType,
-      access: "public",
-    });
-
-    await kv.set(`storage:${fileName}`, blob.url);
-    return res.json({ success: true, url: `/api/storage/file/${fileName}` });
+      const pathname = getBlobUploadPathname(fileName);
+      await put(pathname, body, {
+        access: "public",
+        contentType,
+        addRandomSuffix: false,
+        allowOverwrite: true,
+        cacheControlMaxAge: 60,
+      });
+      return res.json({ success: true, url: `/api/storage/file/${fileName}` });
+    } catch (err: any) {
+      console.error("Blob upload error:", err);
+      return res.status(500).json({ error: err.message || "Blob upload failed" });
+    }
   }
 
-  // Local development: keep using filesystem-based uploads.
   const fullPath = path.join(UPLOADS_DIR, fileName);
   await fs.writeFile(fullPath, data, "utf-8");
   res.json({ success: true, url: `/api/storage/file/${fileName}` });
 });
 
 app.get("/api/storage/file/:filename", async (req, res) => {
+  if (isBlobEnabled) {
+    try {
+      const pathname = getBlobUploadPathname(req.params.filename);
+      const blob = await getBlobByPathname(pathname);
+      if (!blob) return res.status(404).send("File not found");
+      return res.redirect(blob.url);
+    } catch (err) {
+      console.error("Blob file read error:", err);
+      return res.status(500).send("Read error");
+    }
+  }
+
   try {
     const fileName = req.params.filename;
-
-    // In Vercel, redirect to the public blob URL.
-    if (isVercel) {
-      const { kv } = await import("@vercel/kv");
-      const imageUrl = await kv.get<string>(`storage:${fileName}`);
-      if (!imageUrl) return res.status(404).send("File not found");
-
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      return res.redirect(302, imageUrl);
-    }
-
     const fullPath = path.join(UPLOADS_DIR, fileName);
     if (!existsSync(fullPath)) return res.status(404).send("File not found");
     
