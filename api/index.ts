@@ -18,9 +18,12 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+const IS_VERCEL_RUNTIME = Boolean(process.env.VERCEL);
 
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-const DATA_DIR = path.join(process.cwd(), DATA_DIR_NAME);
+const DATA_DIR = IS_VERCEL_RUNTIME
+  ? path.join("/tmp", DATA_DIR_NAME)
+  : path.join(process.cwd(), DATA_DIR_NAME);
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const ALLOWED_COLLECTIONS = new Set(["projects", "categories", "analysisResults", "rounds"]);
 const PROJECT_ROUNDS_COLLECTION_REGEX = /^projects_[a-zA-Z0-9_-]+_rounds$/;
@@ -39,8 +42,10 @@ const BLOB_UPLOADS_PREFIX = (process.env.BLOB_UPLOADS_PREFIX || "uploads").repla
 const isBlobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 // Ensure data directories exist
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+if (!isBlobEnabled || !IS_VERCEL_RUNTIME) {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
