@@ -1736,18 +1736,6 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   };
 
   const renderDesignSourceSelector = () => {
-    if (!isOwner) {
-      return (
-        <div className="flex flex-col items-center justify-center gap-6 p-8">
-          <div className="flex flex-col items-center gap-2">
-            <Layers className={`w-12 h-12 ${theme === 'dark' ? 'text-gray-700' : 'text-gray-300'}`} />
-            <h3 className={`text-sm font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>Design Source</h3>
-            <p className={`text-xs ${theme === 'dark' ? 'text-gray-600' : 'text-gray-400'}`}>No design source provided by the owner.</p>
-          </div>
-        </div>
-      );
-    }
-
     return (
       <div className="flex flex-col items-center justify-center gap-6 p-8">
         <div className="flex flex-col items-center gap-2">
@@ -1823,18 +1811,6 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   };
 
   const renderLiveSourceSelector = () => {
-    if (!isOwner) {
-      return (
-        <div className="flex flex-col items-center justify-center gap-6 p-8">
-          <div className="flex flex-col items-center gap-2">
-            <Zap className={`w-12 h-12 ${theme === 'dark' ? 'text-gray-700' : 'text-gray-300'}`} />
-            <h3 className={`text-sm font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>Live Source</h3>
-            <p className={`text-xs ${theme === 'dark' ? 'text-gray-600' : 'text-gray-400'}`}>No live source provided by the owner.</p>
-          </div>
-        </div>
-      );
-    }
-
     return (
       <div className="flex flex-col items-center justify-center gap-6 p-8">
         <div className="flex flex-col items-center gap-2">
@@ -2200,17 +2176,9 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                     <img src={image} className="max-w-none" style={{ width: '390px' }} draggable={false} />
                     {renderDifferenceBoxes('design')}
                   </div>
-                ) : isOwner ? (
+                ) : (
                   <div className="pointer-events-auto">
                     {renderDesignSourceSelector()}
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center gap-6 p-8">
-                    <div className="flex flex-col items-center gap-2">
-                      <Layers className={`w-12 h-12 ${theme === 'dark' ? 'text-gray-700' : 'text-gray-300'}`} />
-                      <h3 className={`text-sm font-bold uppercase tracking-widest ${theme === 'dark' ? 'text-gray-500' : 'text-gray-400'}`}>Design Source</h3>
-                      <p className={`text-xs ${theme === 'dark' ? 'text-gray-600' : 'text-gray-400'}`}>No design source provided by the owner.</p>
-                    </div>
                   </div>
                 )}
               </div>
