@@ -904,7 +904,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   }, [liveImage]);
 
   const analyzeFidelity = async () => {
-    if (!image || !liveImage || !isOwner) return;
+    if (!image || !liveImage) return;
     setIsAnalyzing(true);
     setDifferences([]);
     setSelectedDiffId(null);
@@ -2868,17 +2868,15 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
               </div>
             </div>
 
-            {isOwner && (
-              <AnalyzeActionBar
-                theme={theme}
-                selectedModel={selectedModel}
-                onModelChange={setSelectedModel}
-                onAnalyze={analyzeFidelity}
-                isAnalyzing={isAnalyzing}
-                hasBothImages={!!image && !!liveImage}
-                hasDifferences={differences.length > 0}
-              />
-            )}
+            <AnalyzeActionBar
+              theme={theme}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              onAnalyze={analyzeFidelity}
+              isAnalyzing={isAnalyzing}
+              hasBothImages={!!image && !!liveImage}
+              hasDifferences={differences.length > 0}
+            />
           </div>
         ) : (
           <>
@@ -3078,17 +3076,15 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
         )}
               </div>
             </div>
-            {isOwner && (
-              <AnalyzeActionBar
-                theme={theme}
-                selectedModel={selectedModel}
-                onModelChange={setSelectedModel}
-                onAnalyze={analyzeFidelity}
-                isAnalyzing={isAnalyzing}
-                hasBothImages={!!image && !!liveImage}
-                hasDifferences={differences.length > 0}
-              />
-            )}
+            <AnalyzeActionBar
+              theme={theme}
+              selectedModel={selectedModel}
+              onModelChange={setSelectedModel}
+              onAnalyze={analyzeFidelity}
+              isAnalyzing={isAnalyzing}
+              hasBothImages={!!image && !!liveImage}
+              hasDifferences={differences.length > 0}
+            />
       </>
     )}
   </div>
