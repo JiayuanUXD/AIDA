@@ -922,26 +922,6 @@ async function startServer() {
     }
   }
 }
-    });
-
-    // Graceful shutdown
-    process.on('SIGTERM', () => {
-      console.log('SIGTERM received, closing server gracefully...');
-      server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-      });
-    });
-
-    process.on('SIGINT', () => {
-      console.log('SIGINT received, closing server gracefully...');
-      server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-      });
-    });
-  }
-}
 
 // Only start server in development (not in Vercel serverless)
 if (!process.env.VERCEL) {
