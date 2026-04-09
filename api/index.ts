@@ -891,19 +891,37 @@ async function startServer() {
 
   // Start the server only in non-Vercel environments
   if (!process.env.VERCEL) {
+    try {
+      const server = app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
 
-    const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
-    });
+      server.on('error', (err: any) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(`⚠️ Port ${PORT} is already in use - server may already be running`);
+          // Don't exit - let the process continue so hot reload can work
+        } else {
+          console.error('Server error:', err);
+        }
+      });
 
-    server.on('error', (err: any) => {
-      if (err.code === 'EADDRINUSE') {
-        console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
-        process.exit(1);
-      } else {
-        console.error('Server error:', err);
-        process.exit(1);
-      }
+      // Graceful shutdown handlers
+      const shutdown = () => {
+        console.log('Shutting down gracefully...');
+        server.close(() => {
+          console.log('Server closed');
+          process.exit(0);
+        });
+      };
+
+      process.on('SIGTERM', shutdown);
+      process.on('SIGINT', shutdown);
+    } catch (err) {
+      console.warn('Server start error:', err);
+      // Don't exit - allow the process to continue
+    }
+  }
+}
     });
 
     // Graceful shutdown
@@ -928,8 +946,8 @@ async function startServer() {
 // Only start server in development (not in Vercel serverless)
 if (!process.env.VERCEL) {
   startServer().catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
+    console.warn('Server startup issue (may already be running):', err.message);
+    // Don't exit - allow process to continue for hot reload
   });
 }
 
