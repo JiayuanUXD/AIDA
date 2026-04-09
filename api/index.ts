@@ -860,37 +860,8 @@ app.all("/api/*", (req, res) => {
   });
 });
 
-// Configure static serving and catch-all for non-API routes
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(process.cwd(), "dist")));
-  app.get("*", (req, res) => {
-    // Only serve index.html if it's not an API route (already handled above)
-    if (!req.url.startsWith('/api')) {
-      res.sendFile(path.join(process.cwd(), "dist/index.html"));
-    } else {
-      res.status(404).json({ error: "API route not found" });
-    }
-  });
-} else {
-  // In development, Vite middleware is used, but we still need a catch-all for SPA routing
-  // The Vite middleware will handle static files and HMR
-  // For any non-API routes that Vite doesn't handle, serve index.html for SPA routing
-  if (!process.env.VERCEL) {
-    app.get("*", (req, res, next) => {
-      // Skip if it's an API route (already handled) or static file
-      if (req.url.startsWith('/api')) {
-        next();
-      } else {
-        // For SPA, serve index.html for any non-API route
-        // Vite will handle actual static files through its middleware
-        res.sendFile(path.join(process.cwd(), "index.html"));
-      }
-    });
-  }
-}
-
 async function startServer() {
-  // Vite middleware for development
+  // Vite middleware for development - MUST be added before catch-all routes
   if (!process.env.VERCEL) {
     if (process.env.NODE_ENV !== "production") {
       const vite = await createViteServer({
@@ -902,6 +873,24 @@ async function startServer() {
       });
       app.use(vite.middlewares);
     }
+  }
+
+  // Configure static serving and catch-all for non-API routes
+  // IMPORTANT: This must be AFTER Vite middleware in development
+  if (process.env.NODE_ENV === "production") {
+    app.use(express.static(path.join(process.cwd(), "dist")));
+    app.get("*", (req, res) => {
+      // Only serve index.html if it's not an API route (already handled above)
+      if (!req.url.startsWith('/api')) {
+        res.sendFile(path.join(process.cwd(), "dist/index.html"));
+      } else {
+        res.status(404).json({ error: "API route not found" });
+      }
+    });
+  }
+
+  // Start the server only in non-Vercel environments
+  if (!process.env.VERCEL) {
 
     const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);
