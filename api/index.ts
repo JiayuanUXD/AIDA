@@ -871,6 +871,22 @@ if (process.env.NODE_ENV === "production") {
       res.status(404).json({ error: "API route not found" });
     }
   });
+} else {
+  // In development, Vite middleware is used, but we still need a catch-all for SPA routing
+  // The Vite middleware will handle static files and HMR
+  // For any non-API routes that Vite doesn't handle, serve index.html for SPA routing
+  if (!process.env.VERCEL) {
+    app.get("*", (req, res, next) => {
+      // Skip if it's an API route (already handled) or static file
+      if (req.url.startsWith('/api')) {
+        next();
+      } else {
+        // For SPA, serve index.html for any non-API route
+        // Vite will handle actual static files through its middleware
+        res.sendFile(path.join(process.cwd(), "index.html"));
+      }
+    });
+  }
 }
 
 async function startServer() {
