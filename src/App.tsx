@@ -218,7 +218,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [projectName, setProjectName] = useState('Untitled Project');
-  const [isOwner, setIsOwner] = useState(false);
+  const isOwner = true;
   const [isEditingName, setIsEditingName] = useState(false);
   const [rounds, setRounds] = useState<any[]>([]);
   const [currentRoundId, setCurrentRoundId] = useState<string | null>(null);
@@ -444,12 +444,10 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     if (projectId) {
       const loadProject = async () => {
         setIsLoading(true);
-        setIsOwner(true);
         try {
           const docSnap = await getDoc(doc('projects', projectId));
           if (docSnap.exists()) {
             const data = docSnap.data();
-            setIsOwner(true);
             if (data.name) {
               setProjectName(data.name);
               setTempName(data.name);
@@ -494,7 +492,6 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
       loadProject();
     } else {
       setIsLoading(false);
-      setIsOwner(true);
     }
   }, [projectId]);
 
