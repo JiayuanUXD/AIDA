@@ -6,11 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
-<<<<<<< HEAD
-import { put, getBlobByPathname } from '@vercel/blob';
-=======
 import OSS from 'ali-oss';
->>>>>>> feature/optimization
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -48,16 +44,6 @@ const OSS_ACCESS_KEY_SECRET = process.env.OSS_ACCESS_KEY_SECRET;
 const OSS_BUCKET = process.env.OSS_BUCKET;
 const isOSSEnabled = Boolean(OSS_REGION && OSS_ACCESS_KEY_ID && OSS_ACCESS_KEY_SECRET && OSS_BUCKET);
 
-<<<<<<< HEAD
-// Blob helper functions
-const getBlobDbPathname = (collection: string) => `${BLOB_DB_PREFIX}/${collection}.json`;
-const getBlobUploadPathname = (fileName: string) => `${BLOB_UPLOADS_PREFIX}/${fileName}`;
-
-// Ensure data directories exist for local fallback.
-if (!isBlobEnabled || !IS_VERCEL_RUNTIME) {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
-=======
 // 初始化 OSS 客户端
 let ossClient: OSS | null = null;
 if (isOSSEnabled) {
@@ -67,7 +53,6 @@ if (isOSSEnabled) {
     accessKeySecret: OSS_ACCESS_KEY_SECRET!,
     bucket: OSS_BUCKET!
   });
->>>>>>> feature/optimization
 }
 
 // 确保数据目录存在
@@ -76,12 +61,9 @@ if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
-<<<<<<< HEAD
-=======
 const getOSSDBPath = (collection: string) => `db/${collection}.json`;
 const getOSSFilePath = (fileName: string) => `uploads/${fileName}`;
 
->>>>>>> feature/optimization
 const normalizeCollectionData = (data: unknown) => (Array.isArray(data) ? data : []);
 
 const readCollection = async (collection: string) => {
@@ -307,18 +289,6 @@ app.post("/api/storage/upload", async (req, res) => {
 app.get("/api/storage/file/:filename", async (req, res) => {
   if (isOSSEnabled && ossClient) {
     try {
-<<<<<<< HEAD
-      const pathname = getBlobUploadPathname(req.params.filename);
-      const blob = await getBlobByPathname(pathname);
-      if (!blob) return res.status(404).send("File not found");
-      const response = await fetch(blob.url, { cache: "no-store" as RequestCache });
-      if (!response.ok) return res.status(404).send("File not found");
-      const contentType = response.headers.get("content-type") || "application/octet-stream";
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      const buffer = await response.arrayBuffer();
-      return res.send(Buffer.from(buffer));
-=======
       const ossPath = getOSSFilePath(req.params.filename);
       try {
         const result = await ossClient.get(ossPath);
@@ -335,7 +305,6 @@ app.get("/api/storage/file/:filename", async (req, res) => {
         console.error("OSS storage read error:", err);
         return res.status(500).send("Read error");
       }
->>>>>>> feature/optimization
     } catch (err) {
       console.error("OSS storage read error:", err);
       return res.status(500).send("Read error");
@@ -958,9 +927,6 @@ async function startServer() {
   });
 }
 
-// Only start server in development (not in Vercel serverless)
-if (!process.env.VERCEL) {
-  startServer();
-}
+startServer();
 
 export default app;
