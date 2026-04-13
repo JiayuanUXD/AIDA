@@ -1,4 +1,4 @@
-import app from "./index.js";
+import app from "./index.ts";
 
 export default async function handler(req: any, res: any) {
   // For Vercel serverless, we need to handle the request/response

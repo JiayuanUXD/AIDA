@@ -6,7 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
-import { createClient } from "@supabase/supabase-js";
+import { put, getBlobByPathname } from '@vercel/blob';
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -39,43 +39,38 @@ const ALLOWED_PROXY_HOSTS = [
   "googleusercontent.com",
   "githubusercontent.com",
 ];
-const SUPABASE_URL = process.env.SUPABASE_URL?.trim() || "";
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || "";
-const SUPABASE_DB_TABLE = (process.env.SUPABASE_DB_TABLE || "app_collections").trim();
-const SUPABASE_STORAGE_BUCKET = (process.env.SUPABASE_STORAGE_BUCKET || "uploads").trim();
-const isSupabaseEnabled = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
-const supabase = isSupabaseEnabled
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    })
-  : null;
+
+const BLOB_DB_PREFIX = (process.env.BLOB_DB_PREFIX || "db").replace(/^\/+|\/+$/g, "");
+const BLOB_UPLOADS_PREFIX = (process.env.BLOB_UPLOADS_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
+const isBlobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+
+// Blob helper functions
+const getBlobDbPathname = (collection: string) => `${BLOB_DB_PREFIX}/${collection}.json`;
+const getBlobUploadPathname = (fileName: string) => `${BLOB_UPLOADS_PREFIX}/${fileName}`;
 
 // Ensure data directories exist for local fallback.
-if (!isSupabaseEnabled || !IS_VERCEL_RUNTIME) {
+if (!isBlobEnabled || !IS_VERCEL_RUNTIME) {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
-const getSupabaseUploadPath = (fileName: string) => `uploads/${fileName}`;
 const normalizeCollectionData = (data: unknown) => (Array.isArray(data) ? data : []);
 
 const readCollection = async (collection: string) => {
-  if (supabase) {
+  if (isBlobEnabled) {
     try {
-      const { data, error } = await supabase
-        .from(SUPABASE_DB_TABLE)
-        .select("data")
-        .eq("collection", collection)
-        .maybeSingle();
-      if (error) {
-        console.error(`Error reading supabase collection ${collection}:`, error);
-      } else {
-        return normalizeCollectionData((data as any)?.data);
-      }
+      const pathname = getBlobDbPathname(collection);
+      const blob = await getBlobByPathname(pathname);
+      if (!blob) return [];
+      const response = await fetch(blob.url, { cache: "no-store" as RequestCache });
+      if (!response.ok) return [];
+      const content = await response.text();
+      if (!content.trim()) return [];
+      return normalizeCollectionData(JSON.parse(content));
     } catch (err) {
-      console.error(`Error reading supabase collection ${collection}:`, err);
+      console.error(`Error reading blob collection ${collection}:`, err);
     }
   }
 
@@ -99,20 +94,19 @@ const readCollection = async (collection: string) => {
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
-  if (supabase) {
+  if (isBlobEnabled) {
     try {
-      const payload = {
-        collection,
-        data,
-        updated_at: new Date().toISOString(),
-      };
-      const { error } = await supabase.from(SUPABASE_DB_TABLE).upsert(payload, {
-        onConflict: "collection",
+      const pathname = getBlobDbPathname(collection);
+      await put(pathname, JSON.stringify(data, null, 2), {
+        access: "public",
+        contentType: "application/json; charset=utf-8",
+        addRandomSuffix: false,
+        allowOverwrite: true,
+        cacheControlMaxAge: 60,
       });
-      if (!error) return;
-      console.error(`Error writing supabase collection ${collection}:`, error);
+      return;
     } catch (err) {
-      console.error(`Error writing supabase collection ${collection}:`, err);
+      console.error(`Error writing blob collection ${collection}:`, err);
     }
   }
 
@@ -158,8 +152,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-  const dbProvider = supabase ? "supabase" : "local";
-  const storageProvider = supabase ? "supabase-storage" : "local";
+  const dbProvider = isBlobEnabled ? "vercel-blob" : "local";
+  const storageProvider = isBlobEnabled ? "vercel-blob" : "local";
   res.json({ status: "ok", env: process.env.NODE_ENV, vercel: !!process.env.VERCEL, dbProvider, storageProvider });
 });
 
@@ -248,8 +242,10 @@ app.post("/api/storage/upload", async (req, res) => {
   if (!filePath || !data) return res.status(400).json({ error: "Path and data required" });
   
   // Safe filename
-  const fileName = filePath.replace(/\//g, '_');
-  if (supabase) {
+  const fileName = String(filePath).replace(/[\\/]/g, '_');
+
+  // In Vercel, store uploads in Blob
+  if (isBlobEnabled) {
     try {
       let body: string | Buffer = data;
       let contentType = "text/plain; charset=utf-8";
@@ -260,15 +256,17 @@ app.post("/api/storage/upload", async (req, res) => {
         body = Buffer.from(match[2], "base64");
       }
 
-      const uploadPath = getSupabaseUploadPath(fileName);
-      const { error } = await supabase.storage
-        .from(SUPABASE_STORAGE_BUCKET)
-        .upload(uploadPath, body, { upsert: true, contentType });
-      if (error) throw error;
+      const pathname = getBlobUploadPathname(fileName);
+      await put(pathname, body, {
+        access: "public",
+        contentType,
+        addRandomSuffix: false,
+        allowOverwrite: true,
+      });
       return res.json({ success: true, url: `/api/storage/file/${fileName}` });
     } catch (err: any) {
-      console.error("Supabase storage upload error:", err);
-      return res.status(500).json({ error: err.message || "Supabase storage upload failed" });
+      console.error("Blob storage upload error:", err);
+      return res.status(500).json({ error: err.message || "Blob storage upload failed" });
     }
   }
 
@@ -278,20 +276,20 @@ app.post("/api/storage/upload", async (req, res) => {
 });
 
 app.get("/api/storage/file/:filename", async (req, res) => {
-  if (supabase) {
+  if (isBlobEnabled) {
     try {
-      const uploadPath = getSupabaseUploadPath(req.params.filename);
-      const { data, error } = await supabase.storage
-        .from(SUPABASE_STORAGE_BUCKET)
-        .download(uploadPath);
-      if (error || !data) return res.status(404).send("File not found");
-      const arrayBuffer = await data.arrayBuffer();
-      const contentType = data.type || "application/octet-stream";
+      const pathname = getBlobUploadPathname(req.params.filename);
+      const blob = await getBlobByPathname(pathname);
+      if (!blob) return res.status(404).send("File not found");
+      const response = await fetch(blob.url, { cache: "no-store" as RequestCache });
+      if (!response.ok) return res.status(404).send("File not found");
+      const contentType = response.headers.get("content-type") || "application/octet-stream";
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", "public, max-age=86400");
-      return res.send(Buffer.from(arrayBuffer));
+      const buffer = await response.arrayBuffer();
+      return res.send(Buffer.from(buffer));
     } catch (err) {
-      console.error("Supabase storage read error:", err);
+      console.error("Blob storage read error:", err);
       return res.status(500).send("Read error");
     }
   }
@@ -309,19 +307,18 @@ app.get("/api/storage/file/:filename", async (req, res) => {
       const match = content.match(/^data:([^;]+);base64,(.+)$/);
       if (match) {
         const contentType = match[1];
-        const base64Data = match[2];
-        const buffer = Buffer.from(base64Data, 'base64');
-        res.setHeader('Content-Type', contentType);
-        // Set cache control for better performance
-        res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 day
+        const buffer = Buffer.from(match[2], "base64");
+        res.setHeader("Content-Type", contentType);
+        res.setHeader("Cache-Control", "public, max-age=86400");
         return res.send(buffer);
       }
     }
     
-    // Fallback to sending as is (text/plain)
+    // Fallback for non-data URL content
+    res.setHeader("Content-Type", "text/plain");
     res.send(content);
   } catch (err) {
-    console.error("Error serving local file:", err);
+    console.error("Local storage read error:", err);
     res.status(500).send("Read error");
   }
 });
