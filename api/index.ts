@@ -915,8 +915,14 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
+  // 火山引擎环境优化：使用环境变量指定的端口，默认为3000
   const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    const serverUrl = process.env.NODE_ENV === "production" 
+      ? `http://0.0.0.0:${PORT}` 
+      : `http://localhost:${PORT}`;
+    console.log(`🚀 Server running on ${serverUrl}`);
+    console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`💾 Storage: ${isOSSEnabled ? 'Aliyun OSS' : 'Local File System'}`);
   });
 
   server.on('error', (err: any) => {
@@ -924,6 +930,8 @@ async function startServer() {
       console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
       process.exit(1);
     }
+    console.error('❌ Server startup error:', err);
+    process.exit(1);
   });
 }
 

@@ -52,9 +52,105 @@ Also set your existing keys as needed:
 4. Run `npm run build` to build the frontend.
 5. Start the server: `node dist/api/index.js` or use PM2 for process management.
 
+## Deploy to Volcano Engine
+
+### 1. Volcano Engine Environment Setup
+
+#### 1.1 Create ECS Instance
+- Log in to Volcano Engine console
+- Create an ECS instance (recommended: CentOS 7.9 or Ubuntu 20.04+)
+- Allocate public IP address
+- Configure security group to open port 3000
+
+#### 1.2 Install Dependencies
+```bash
+# Update system
+sudo yum update -y  # For CentOS
+# or
+sudo apt update && sudo apt upgrade -y  # For Ubuntu
+
+# Install Node.js 18+
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs  # For Ubuntu
+# or
+curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
+sudo yum install -y nodejs  # For CentOS
+
+# Install PM2 (recommended for production)
+sudo npm install -g pm2
+
+# Install Git
+sudo apt install -y git  # For Ubuntu
+# or
+sudo yum install -y git  # For CentOS
+```
+
+### 2. Deploy Project
+
+#### 2.1 Clone Repository
+```bash
+cd /opt
+git clone https://github.com/JiayuanUXD/AIDA0331.git
+git checkout hsyq
+```
+
+#### 2.2 Install Dependencies
+```bash
+cd AIDA0331
+npm install
+```
+
+#### 2.3 Configure Environment Variables
+```bash
+cp .env.example .env
+# Edit .env file with your configuration
+vi .env
+```
+
+#### 2.4 Build Project
+```bash
+npm run build
+```
+
+#### 2.5 Start Server
+```bash
+# Start with PM2 (recommended)
+pm2 start dist/api/index.js --name aida-app
+
+# Set PM2 to start on boot
+pm2 save
+pm2 startup
+```
+
+### 3. Volcano Engine Specific Configuration
+
+#### 3.1 Security Group Settings
+- Open inbound port 3000 in Volcano Engine security group
+- Allow HTTP traffic on port 3000
+
+#### 3.2 ECS Instance Optimization
+- Configure instance memory based on your needs (recommended: at least 2GB RAM)
+- Set up swap space if needed
+- Configure firewall rules
+
+### 4. Monitoring and Maintenance
+
+#### 4.1 Check Service Status
+```bash
+pm2 status
+pm2 logs aida-app
+```
+
+#### 4.2 Auto-restart on Failure
+PM2 will automatically restart the service if it crashes.
+
+#### 4.3 Backup Strategy
+- Regularly backup your OSS data
+- Consider setting up automated backups for critical data
+
 ## 版本记录
 
-### 2026-04-13（阿里云部署版本）
+### 2026-04-13（火山引擎部署版本）
 
 - 存储方案升级为阿里云 OSS：
   - `/api/db/*` 数据改为 OSS `db/` 目录存储。
@@ -67,6 +163,14 @@ Also set your existing keys as needed:
 - 服务器启动逻辑优化：
   - 移除 Vercel 环境检测，确保在所有环境中正常启动。
   - 简化启动流程，使其更加通用。
+  - 增加详细的启动日志，便于在火山引擎环境中调试。
+- 环境变量配置优化：
+  - 添加火山引擎部署相关的环境变量配置。
+  - 优化环境变量加载顺序，确保配置正确。
+- 部署文档完善：
+  - 添加火山引擎部署详细指南。
+  - 提供 ECS 实例配置和依赖安装步骤。
+  - 包含监控和维护建议。
 - 类型安全优化：
   - 修复 TypeScript 编译错误。
   - 确保代码类型安全。
