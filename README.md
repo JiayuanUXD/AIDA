@@ -64,7 +64,210 @@ If you changed `SUPABASE_DB_TABLE`, create that table with the same schema.
 3. Configure the env vars above.
 4. Deploy.
 
+## Deploy to Google Cloud
+
+### 1. Google Cloud Environment Setup
+
+#### 1.1 Create Google Cloud Project
+- Log in to [Google Cloud Console](https://console.cloud.google.com/)
+- Create a new project or select an existing one
+- Enable billing for your project
+
+#### 1.2 Enable Required APIs
+- Go to APIs & Services > Library
+- Enable the following APIs:
+  - Cloud Storage API
+  - App Engine Admin API (if using App Engine)
+  - Compute Engine API (if using GCE)
+
+#### 1.3 Create Cloud Storage Bucket
+- Go to Cloud Storage > Buckets
+- Create a new bucket with the following settings:
+  - Name: Choose a unique name (e.g., `aida-storage`)
+  - Location: Select a region close to your users
+  - Storage class: Standard
+  - Access control: Fine-grained (recommended)
+
+#### 1.4 Create Service Account
+- Go to IAM & Admin > Service accounts
+- Create a new service account with:
+  - Name: `aida-service-account`
+  - Role: Storage Object Admin (for Cloud Storage access)
+  - Download the service account key as JSON
+
+### 2. Deploy to Google Cloud App Engine
+
+#### 2.1 Install Google Cloud SDK
+```bash
+# For macOS
+brew install google-cloud-sdk
+
+# For Linux
+sudo apt-get install google-cloud-sdk  # Debian/Ubuntu
+# or
+sudo yum install google-cloud-sdk  # CentOS/RHEL
+
+# Initialize gcloud
+gcloud init
+```
+
+#### 2.2 Create App Engine Configuration
+Create `app.yaml` file in the project root:
+```yaml
+runtime: nodejs18
+env: standard
+
+instance_class: F2
+
+env_variables:
+  GOOGLE_CLOUD_PROJECT: "your-project-id"
+  GOOGLE_CLOUD_STORAGE_BUCKET: "your-storage-bucket"
+  # Add other environment variables here
+
+handlers:
+- url: /api/.*
+  script: auto
+  secure: always
+
+- url: /.*
+  static_files: dist/index.html
+  upload: dist/index.html
+  secure: always
+
+- url: /(.*)
+  static_files: dist/\1
+  upload: dist/(.*)
+  secure: always
+```
+
+#### 2.3 Build and Deploy
+```bash
+# Build the project
+npm run build
+
+# Deploy to App Engine
+gcloud app deploy
+
+# Check deployment status
+gcloud app browse
+```
+
+### 3. Deploy to Google Compute Engine (GCE)
+
+#### 3.1 Create GCE Instance
+- Go to Compute Engine > VM instances
+- Create a new instance with:
+  - Machine type: e2-medium (2 vCPUs, 4GB RAM)
+  - Boot disk: Ubuntu 20.04 LTS
+  - Firewall: Allow HTTP and HTTPS traffic
+
+#### 3.2 Connect to Instance
+```bash
+gcloud compute ssh your-instance-name
+```
+
+#### 3.3 Install Dependencies
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Node.js 18+
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Install PM2 (recommended for production)
+sudo npm install -g pm2
+
+# Install Git
+sudo apt install -y git
+```
+
+#### 3.4 Deploy Project
+```bash
+# Clone repository
+cd /opt
+git clone https://github.com/JiayuanUXD/AIDA0331.git
+git checkout feature/optimization
+
+# Install dependencies
+cd AIDA0331
+npm install
+
+# Configure environment variables
+cp .env.example .env
+# Edit .env file with your configuration
+nano .env
+
+# Build project
+npm run build
+
+# Start server with PM2
+pm2 start dist/api/index.js --name aida-app
+
+# Set PM2 to start on boot
+pm2 save
+pm2 startup
+```
+
+### 4. Google Cloud Specific Configuration
+
+#### 4.1 Storage Configuration
+- The application will automatically use Google Cloud Storage if the following env vars are set:
+  - `GOOGLE_CLOUD_PROJECT`
+  - `GOOGLE_CLOUD_STORAGE_BUCKET`
+- Data will be stored in:
+  - `gs://your-bucket/db/` (for JSON data)
+  - `gs://your-bucket/uploads/` (for uploaded files)
+
+#### 4.2 Environment Variables
+- For App Engine: Set env vars in `app.yaml`
+- For GCE: Set env vars in `.env` file
+- For local development: Set `GOOGLE_APPLICATION_CREDENTIALS` to the path of your service account key
+
+### 5. Monitoring and Maintenance
+
+#### 5.1 Check Service Status
+```bash
+# For App Engine
+gcloud app logs tail -s default
+
+# For GCE
+pm2 status
+pm2 logs aida-app
+```
+
+#### 5.2 Auto-scaling (App Engine)
+- App Engine will automatically scale based on traffic
+- You can adjust instance class and scaling settings in `app.yaml`
+
+#### 5.3 Backup Strategy
+- Enable Object Versioning in your Cloud Storage bucket
+- Set up Cloud Storage lifecycle rules for automatic archiving
+- Consider using Cloud Backup for critical data
+
 ## 版本记录
+
+### 2026-04-13（谷歌云部署版本）
+
+- 存储方案升级为多云存储：
+  - 新增谷歌云存储支持，优先使用 Google Cloud Storage
+  - 保留阿里云 OSS 作为备选存储方案
+  - 本地文件系统作为最终降级方案
+- 服务器启动逻辑优化：
+  - 增加谷歌云环境检测和适配
+  - 提供详细的启动日志，便于调试
+  - 优化错误处理和端口管理
+- 环境变量配置优化：
+  - 添加谷歌云相关环境变量配置
+  - 支持服务账号凭据配置
+  - 提供完整的部署环境配置示例
+- 部署文档完善：
+  - 添加谷歌云 App Engine 部署指南
+  - 添加谷歌云 Compute Engine 部署指南
+  - 提供详细的存储配置和监控维护建议
+- 类型安全优化：
+  - 确保 TypeScript 编译通过
+  - 优化代码结构和错误处理
 
 ### 2026-04-08（精简版）
 
