@@ -4,7 +4,7 @@
 
 # Run and deploy your AI Studio app
 
-This contains everything you need to run your app locally.
+This contains everything you need to run your app locally and on Aliyun.
 
 View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53ab8a8db
 
@@ -19,16 +19,16 @@ View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53
 3. Run the app:
    `npm run dev`
 
-## Deploy to Vercel (Supabase DB + Supabase Storage)
+## Deploy to Aliyun (Aliyun OSS)
 
-### 1. Create Supabase table and set env vars in Vercel
+### 1. Create Aliyun OSS bucket and set env vars
 
-In your Vercel project, add these Environment Variables:
+In your Aliyun project, add these Environment Variables:
 
-- `SUPABASE_URL` (required for persistent DB and file storage)
-- `SUPABASE_SERVICE_ROLE_KEY` (required for server-side DB/file read-write)
-- `SUPABASE_DB_TABLE` (optional, default: `app_collections`)
-- `SUPABASE_STORAGE_BUCKET` (optional, default: `uploads`)
+- `OSS_REGION` (required for OSS storage, e.g., `oss-cn-hangzhou`)
+- `OSS_ACCESS_KEY_ID` (required for OSS access)
+- `OSS_ACCESS_KEY_SECRET` (required for OSS access)
+- `OSS_BUCKET` (required for OSS storage)
 
 Also set your existing keys as needed:
 
@@ -40,31 +40,36 @@ Also set your existing keys as needed:
 
 ### 2. Data behavior
 
-- With Supabase env configured: `/api/db/*` data is stored in Supabase table.
-- Uploaded files are stored in Supabase Storage bucket.
-- If Supabase is not configured, DB/file storage falls back to local filesystem.
+- With Aliyun OSS configured: `/api/db/*` data is stored in OSS `db/` directory.
+- Uploaded files are stored in OSS `uploads/` directory.
+- If OSS is not configured, DB/file storage falls back to local filesystem.
 
-### 3. Supabase SQL (run once)
-
-```sql
-create table if not exists public.app_collections (
-  collection text primary key,
-  data jsonb not null default '[]'::jsonb,
-  updated_at timestamptz not null default now()
-);
-```
-
-Also create a Storage bucket (default bucket name: `uploads`).
-If you changed `SUPABASE_DB_TABLE`, create that table with the same schema.
-
-### 4. Deploy
+### 3. Deploy
 
 1. Push to your GitHub repository.
-2. Import the repo in Vercel.
+2. Deploy to Aliyun ECS or Container Service.
 3. Configure the env vars above.
-4. Deploy.
+4. Run `npm run build` to build the frontend.
+5. Start the server: `node dist/api/index.js` or use PM2 for process management.
 
 ## 版本记录
+
+### 2026-04-13（阿里云部署版本）
+
+- 存储方案升级为阿里云 OSS：
+  - `/api/db/*` 数据改为 OSS `db/` 目录存储。
+  - `/api/storage/*` 图片/文件改为 OSS `uploads/` 目录存储。
+  - 移除 Vercel Blob 依赖与配置说明，统一为阿里云 OSS 配置。
+- 移除 Vercel 部署相关代码：
+  - 删除 `vercel.json` 配置文件。
+  - 删除 `api/[[...path]].ts` Vercel serverless 函数。
+  - 移除 `dev:vercel:opt` 脚本。
+- 服务器启动逻辑优化：
+  - 移除 Vercel 环境检测，确保在所有环境中正常启动。
+  - 简化启动流程，使其更加通用。
+- 类型安全优化：
+  - 修复 TypeScript 编译错误。
+  - 确保代码类型安全。
 
 ### 2026-04-08（精简版）
 
