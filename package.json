@@ -16,7 +16,6 @@
     "@google-cloud/storage": "^7.14.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/cors": "^2.8.19",
-    "ali-oss": "^6.20.0",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",

@@ -6,7 +6,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
-import OSS from 'ali-oss';
 import { Storage } from '@google-cloud/storage';
 
 import fs from "fs/promises";
@@ -38,24 +37,6 @@ const ALLOWED_PROXY_HOSTS = [
   "githubusercontent.com",
 ];
 
-// 阿里云 OSS 配置
-const OSS_REGION = process.env.OSS_REGION;
-const OSS_ACCESS_KEY_ID = process.env.OSS_ACCESS_KEY_ID;
-const OSS_ACCESS_KEY_SECRET = process.env.OSS_ACCESS_KEY_SECRET;
-const OSS_BUCKET = process.env.OSS_BUCKET;
-const isOSSEnabled = Boolean(OSS_REGION && OSS_ACCESS_KEY_ID && OSS_ACCESS_KEY_SECRET && OSS_BUCKET);
-
-// 初始化 OSS 客户端
-let ossClient: OSS | null = null;
-if (isOSSEnabled) {
-  ossClient = new OSS({
-    region: OSS_REGION!,
-    accessKeyId: OSS_ACCESS_KEY_ID!,
-    accessKeySecret: OSS_ACCESS_KEY_SECRET!,
-    bucket: OSS_BUCKET!
-  });
-}
-
 // 谷歌云存储配置
 const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT;
 const GOOGLE_CLOUD_STORAGE_BUCKET = process.env.GOOGLE_CLOUD_STORAGE_BUCKET;
@@ -81,8 +62,6 @@ if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
-const getOSSDBPath = (collection: string) => `db/${collection}.json`;
-const getOSSFilePath = (fileName: string) => `uploads/${fileName}`;
 const getGoogleCloudStorageDBPath = (collection: string) => `db/${collection}.json`;
 const getGoogleCloudStorageFilePath = (fileName: string) => `uploads/${fileName}`;
 
@@ -111,28 +90,6 @@ const readCollection = async (collection: string) => {
       }
     } catch (err) {
       console.error(`Error reading Google Cloud Storage collection ${collection}:`, err);
-    }
-  }
-
-  // 其次使用阿里云 OSS
-  if (isOSSEnabled && ossClient) {
-    try {
-      const ossPath = getOSSDBPath(collection);
-      try {
-        const result = await ossClient.get(ossPath);
-        if (result && result.content) {
-          const content = result.content.toString('utf-8');
-          if (content.trim()) {
-            return normalizeCollectionData(JSON.parse(content));
-          }
-        }
-      } catch (err: any) {
-        if (err.name !== 'NoSuchKey') {
-          console.error(`Error reading OSS collection ${collection}:`, err);
-        }
-      }
-    } catch (err) {
-      console.error(`Error reading OSS collection ${collection}:`, err);
     }
   }
 
@@ -171,21 +128,6 @@ const writeCollection = async (collection: string, data: any[]) => {
       return;
     } catch (err) {
       console.error(`Error writing Google Cloud Storage collection ${collection}:`, err);
-    }
-  }
-
-  // 其次使用阿里云 OSS
-  if (isOSSEnabled && ossClient) {
-    try {
-      const ossPath = getOSSDBPath(collection);
-      await ossClient.put(ossPath, JSON.stringify(data, null, 2), {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8'
-        }
-      });
-      return;
-    } catch (err) {
-      console.error(`Error writing OSS collection ${collection}:`, err);
     }
   }
 
@@ -232,8 +174,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-  const dbProvider = isOSSEnabled ? "aliyun-oss" : "local";
-  const storageProvider = isOSSEnabled ? "aliyun-oss" : "local";
+  const dbProvider = isGoogleCloudStorageEnabled ? "google-cloud-storage" : "local";
+  const storageProvider = isGoogleCloudStorageEnabled ? "google-cloud-storage" : "local";
   res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider });
 });
 
@@ -347,31 +289,6 @@ app.post("/api/storage/upload", async (req, res) => {
       return res.json({ success: true, url: `/api/storage/file/${fileName}` });
     } catch (err: any) {
       console.error("Google Cloud Storage upload error:", err);
-      // 继续尝试其他存储方案
-    }
-  }
-
-  // Store uploads in Aliyun OSS
-  if (isOSSEnabled && ossClient) {
-    try {
-      let body: string | Buffer = data;
-      let contentType = "text/plain; charset=utf-8";
-
-      const match = typeof data === "string" ? data.match(/^data:([^;]+);base64,(.+)$/) : null;
-      if (match) {
-        contentType = match[1];
-        body = Buffer.from(match[2], "base64");
-      }
-
-      const ossPath = getOSSFilePath(fileName);
-      await ossClient.put(ossPath, body, {
-        headers: {
-          'Content-Type': contentType
-        }
-      });
-      return res.json({ success: true, url: `/api/storage/file/${fileName}` });
-    } catch (err: any) {
-      console.error("OSS storage upload error:", err);
       // 继续尝试本地存储
     }
   }
@@ -406,34 +323,10 @@ app.get("/api/storage/file/:filename", async (req, res) => {
         if (err.code !== 404) {
           console.error("Google Cloud Storage download error:", err);
         }
-        // Continue to next storage option
+        // Continue to local storage
       }
     } catch (err: any) {
       console.error("Google Cloud Storage download error:", err);
-      // Continue to next storage option
-    }
-  }
-
-  // Try Aliyun OSS
-  if (isOSSEnabled && ossClient) {
-    try {
-      const ossPath = getOSSFilePath(req.params.filename);
-      try {
-        const result = await ossClient.get(ossPath);
-        if (result && result.content) {
-          const contentType = result.res.headers['content-type'] || 'application/octet-stream';
-          res.setHeader("Content-Type", contentType);
-          res.setHeader("Cache-Control", "public, max-age=86400");
-          return res.send(result.content);
-        }
-      } catch (err: any) {
-        if (err.name !== 'NoSuchKey') {
-          console.error("OSS storage read error:", err);
-        }
-        // Continue to local storage
-      }
-    } catch (err) {
-      console.error("OSS storage read error:", err);
       // Continue to local storage
     }
   }
@@ -1051,8 +944,8 @@ async function startServer() {
       : `http://localhost:${PORT}`;
     console.log(`🚀 Server running on ${serverUrl}`);
     console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`☁️ Cloud Provider: ${process.env.GOOGLE_CLOUD_PROJECT ? 'Google Cloud' : process.env.OSS_REGION ? 'Aliyun' : 'Local'}`);
-    console.log(`💾 Storage: ${isGoogleCloudStorageEnabled ? 'Google Cloud Storage' : isOSSEnabled ? 'Aliyun OSS' : 'Local File System'}`);
+    console.log(`☁️ Cloud Provider: ${process.env.GOOGLE_CLOUD_PROJECT ? 'Google Cloud' : 'Local'}`);
+    console.log(`💾 Storage: ${isGoogleCloudStorageEnabled ? 'Google Cloud Storage' : 'Local File System'}`);
   });
 
   server.on('error', (err: any) => {
