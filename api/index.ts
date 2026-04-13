@@ -6,7 +6,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
-import { list, put } from "@vercel/blob";
+import OSS from 'ali-oss';
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -20,12 +20,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
-const IS_VERCEL_RUNTIME = Boolean(process.env.VERCEL);
 
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-const DATA_DIR = IS_VERCEL_RUNTIME
-  ? path.join("/tmp", DATA_DIR_NAME)
-  : path.join(process.cwd(), DATA_DIR_NAME);
+const DATA_DIR = path.join(process.cwd(), DATA_DIR_NAME);
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const ALLOWED_COLLECTIONS = new Set(["projects", "categories", "analysisResults", "rounds"]);
 const PROJECT_ROUNDS_COLLECTION_REGEX = /^projects_[a-zA-Z0-9_-]+_rounds$/;
@@ -40,41 +37,54 @@ const ALLOWED_PROXY_HOSTS = [
   "githubusercontent.com",
 ];
 
-const BLOB_DB_PREFIX = (process.env.BLOB_DB_PREFIX || "db").replace(/^\/+|\/+$/g, "");
-const BLOB_UPLOADS_PREFIX = (process.env.BLOB_UPLOADS_PREFIX || "uploads").replace(/^\/+|\/+$/g, "");
-const isBlobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+// 阿里云 OSS 配置
+const OSS_REGION = process.env.OSS_REGION;
+const OSS_ACCESS_KEY_ID = process.env.OSS_ACCESS_KEY_ID;
+const OSS_ACCESS_KEY_SECRET = process.env.OSS_ACCESS_KEY_SECRET;
+const OSS_BUCKET = process.env.OSS_BUCKET;
+const isOSSEnabled = Boolean(OSS_REGION && OSS_ACCESS_KEY_ID && OSS_ACCESS_KEY_SECRET && OSS_BUCKET);
 
-// Ensure data directories exist for local fallback.
-if (!isBlobEnabled || !IS_VERCEL_RUNTIME) {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+// 初始化 OSS 客户端
+let ossClient: OSS | null = null;
+if (isOSSEnabled) {
+  ossClient = new OSS({
+    region: OSS_REGION!,
+    accessKeyId: OSS_ACCESS_KEY_ID!,
+    accessKeySecret: OSS_ACCESS_KEY_SECRET!,
+    bucket: OSS_BUCKET!
+  });
 }
+
+// 确保数据目录存在
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
-const getBlobDbPathname = (collection: string) => `${BLOB_DB_PREFIX}/${collection}.json`;
-const getBlobUploadPathname = (fileName: string) => `${BLOB_UPLOADS_PREFIX}/${fileName}`;
-
-const getBlobByPathname = async (pathname: string) => {
-  const { blobs } = await list({ prefix: pathname, limit: 1000 });
-  return blobs.find((blob: any) => blob.pathname === pathname) || null;
-};
+const getOSSDBPath = (collection: string) => `db/${collection}.json`;
+const getOSSFilePath = (fileName: string) => `uploads/${fileName}`;
 
 const normalizeCollectionData = (data: unknown) => (Array.isArray(data) ? data : []);
 
 const readCollection = async (collection: string) => {
-  if (isBlobEnabled) {
+  if (isOSSEnabled && ossClient) {
     try {
-      const pathname = getBlobDbPathname(collection);
-      const blob = await getBlobByPathname(pathname);
-      if (!blob) return [];
-      const response = await fetch(blob.url, { cache: "no-store" as RequestCache });
-      if (!response.ok) return [];
-      const content = await response.text();
-      if (!content.trim()) return [];
-      return normalizeCollectionData(JSON.parse(content));
+      const ossPath = getOSSDBPath(collection);
+      try {
+        const result = await ossClient.get(ossPath);
+        if (result && result.content) {
+          const content = result.content.toString('utf-8');
+          if (content.trim()) {
+            return normalizeCollectionData(JSON.parse(content));
+          }
+        }
+      } catch (err: any) {
+        if (err.name !== 'NoSuchKey') {
+          console.error(`Error reading OSS collection ${collection}:`, err);
+        }
+      }
     } catch (err) {
-      console.error(`Error reading blob collection ${collection}:`, err);
+      console.error(`Error reading OSS collection ${collection}:`, err);
     }
   }
 
@@ -98,19 +108,17 @@ const readCollection = async (collection: string) => {
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
-  if (isBlobEnabled) {
+  if (isOSSEnabled && ossClient) {
     try {
-      const pathname = getBlobDbPathname(collection);
-      await put(pathname, JSON.stringify(data, null, 2), {
-        access: "public",
-        contentType: "application/json; charset=utf-8",
-        addRandomSuffix: false,
-        allowOverwrite: true,
-        cacheControlMaxAge: 60,
+      const ossPath = getOSSDBPath(collection);
+      await ossClient.put(ossPath, JSON.stringify(data, null, 2), {
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8'
+        }
       });
       return;
     } catch (err) {
-      console.error(`Error writing blob collection ${collection}:`, err);
+      console.error(`Error writing OSS collection ${collection}:`, err);
     }
   }
 
@@ -156,9 +164,9 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-  const dbProvider = isBlobEnabled ? "vercel-blob" : "local";
-  const storageProvider = isBlobEnabled ? "vercel-blob" : "local";
-  res.json({ status: "ok", env: process.env.NODE_ENV, vercel: !!process.env.VERCEL, dbProvider, storageProvider });
+  const dbProvider = isOSSEnabled ? "aliyun-oss" : "local";
+  const storageProvider = isOSSEnabled ? "aliyun-oss" : "local";
+  res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider });
 });
 
 // Error handler for body-parser errors
@@ -248,8 +256,8 @@ app.post("/api/storage/upload", async (req, res) => {
   // Safe filename
   const fileName = String(filePath).replace(/[\\/]/g, '_');
 
-  // In Vercel, store uploads in Blob
-  if (isBlobEnabled) {
+  // Store uploads in Aliyun OSS
+  if (isOSSEnabled && ossClient) {
     try {
       let body: string | Buffer = data;
       let contentType = "text/plain; charset=utf-8";
@@ -260,17 +268,16 @@ app.post("/api/storage/upload", async (req, res) => {
         body = Buffer.from(match[2], "base64");
       }
 
-      const pathname = getBlobUploadPathname(fileName);
-      await put(pathname, body, {
-        access: "public",
-        contentType,
-        addRandomSuffix: false,
-        allowOverwrite: true,
+      const ossPath = getOSSFilePath(fileName);
+      await ossClient.put(ossPath, body, {
+        headers: {
+          'Content-Type': contentType
+        }
       });
       return res.json({ success: true, url: `/api/storage/file/${fileName}` });
     } catch (err: any) {
-      console.error("Blob storage upload error:", err);
-      return res.status(500).json({ error: err.message || "Blob storage upload failed" });
+      console.error("OSS storage upload error:", err);
+      return res.status(500).json({ error: err.message || "OSS storage upload failed" });
     }
   }
 
@@ -280,14 +287,26 @@ app.post("/api/storage/upload", async (req, res) => {
 });
 
 app.get("/api/storage/file/:filename", async (req, res) => {
-  if (isBlobEnabled) {
+  if (isOSSEnabled && ossClient) {
     try {
-      const pathname = getBlobUploadPathname(req.params.filename);
-      const blob = await getBlobByPathname(pathname);
-      if (!blob) return res.status(404).send("File not found");
-      return res.redirect(blob.url);
+      const ossPath = getOSSFilePath(req.params.filename);
+      try {
+        const result = await ossClient.get(ossPath);
+        if (result && result.content) {
+          const contentType = result.res.headers['content-type'] || 'application/octet-stream';
+          res.setHeader("Content-Type", contentType);
+          res.setHeader("Cache-Control", "public, max-age=86400");
+          return res.send(result.content);
+        }
+      } catch (err: any) {
+        if (err.name === 'NoSuchKey') {
+          return res.status(404).send("File not found");
+        }
+        console.error("OSS storage read error:", err);
+        return res.status(500).send("Read error");
+      }
     } catch (err) {
-      console.error("Blob storage read error:", err);
+      console.error("OSS storage read error:", err);
       return res.status(500).send("Read error");
     }
   }
@@ -885,29 +904,27 @@ if (process.env.NODE_ENV === "production") {
 
 async function startServer() {
   // Vite middleware for development
-  if (!process.env.VERCEL) {
-    if (process.env.NODE_ENV !== "production") {
-      const vite = await createViteServer({
-        server: { 
-          middlewareMode: true,
-          hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 } // 使用不同端口避免 HMR 冲突
-        },
-        appType: "spa",
-      });
-      app.use(vite.middlewares);
-    }
-
-    const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { 
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 } // 使用不同端口避免 HMR 冲突
+      },
+      appType: "spa",
     });
-
-    server.on('error', (err: any) => {
-      if (err.code === 'EADDRINUSE') {
-        console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
-        process.exit(1);
-      }
-    });
+    app.use(vite.middlewares);
   }
+
+  const server = app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
+      process.exit(1);
+    }
+  });
 }
 
 startServer();

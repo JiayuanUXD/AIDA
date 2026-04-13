@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "tsx api/index.ts",
     "dev:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && PORT=3001 DATA_DIR_NAME=data-opt tsx api/index.ts",
-    "dev:vercel:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && DATA_DIR_NAME=data-opt npx vercel dev --listen 3001",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -16,7 +15,7 @@
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/cors": "^2.8.19",
-    "@vercel/blob": "^2.3.3",
+    "ali-oss": "^6.20.0",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
