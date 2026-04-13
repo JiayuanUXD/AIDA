@@ -226,6 +226,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const [showRoundsPanel, setShowRoundsPanel] = useState(false);
   const [roundsPanelHeight, setRoundsPanelHeight] = useState(150);
   const [isResizingRoundsPanel, setIsResizingRoundsPanel] = useState(false);
+  const [activePanel, setActivePanel] = useState<'controls' | 'differences'>('controls');
   const [tempName, setTempName] = useState('');
   const skipNextAutoSave = React.useRef(false);
   const skipNextRoundAutoSave = React.useRef(false);
@@ -235,6 +236,13 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
   const isSavingRoundRef = React.useRef(false);
   const currentImageRef = React.useRef<string | null>(null);
   const currentLiveImageRef = React.useRef<string | null>(null);
+
+  // Auto-switch to controls panel when there are no differences
+  useEffect(() => {
+    if (differences.length === 0 && activePanel === 'differences') {
+      setActivePanel('controls');
+    }
+  }, [differences.length, activePanel]);
 
   const buildSaveFingerprint = () => JSON.stringify({
     image,
@@ -1199,7 +1207,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
 
   useEffect(() => {
     const handleGlobalMouseMove = (e: MouseEvent) => {
-      if (isDraggingRef.current) {
+      if (isDraggingRef.current && !isAddingDiffRef.current && comparisonMode !== 'split') {
         setPosition({
           x: e.clientX - dragStartRef.current.x,
           y: e.clientY - dragStartRef.current.y
@@ -1434,6 +1442,8 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
       setNewDiffStart({ x, y });
       return;
     }
+    if (comparisonMode === 'slider' && paneType === 'build') return;
+    if (comparisonMode === 'split') return;
     setIsDragging(true);
     setDragStart({
       x: e.clientX - position.x,
@@ -2028,8 +2038,8 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
             </div>
           </div>
 
-          {/* Centered Comparison Modes - Excluding Sidebar Width */}
-          <div className="absolute left-0 right-96 flex justify-center pointer-events-none">
+          {/* Centered Comparison Modes - Full Width */}
+          <div className="absolute left-0 right-0 flex justify-center pointer-events-none">
             <div className={`flex items-center gap-1 p-1 rounded-2xl transition-colors duration-200 pointer-events-auto ${
               theme === 'dark' ? 'bg-[#2c2c2c]' : 'bg-[#f0f0f5]'
             }`}>
@@ -2248,7 +2258,12 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                       </>
                     ) : liveImage ? (
                       <>
-                        <img src={liveImage} className="max-h-none max-w-none" style={{ width: '390px' }} />
+                        <div 
+                          style={{ transform: `scale(${scale})`, transformOrigin: 'center' }} 
+                          onMouseDown={(e) => handleMouseDown(e, 'build')}
+                        >
+                          <img src={liveImage} className="max-h-none max-w-none" style={{ width: '390px' }} draggable={false} />
+                        </div>
                         {renderDifferenceBoxes('build')}
                       </>
                     ) : (
@@ -2307,7 +2322,11 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                 </div>
               ) : (
                 <div className={`w-full h-full flex items-center justify-center overflow-auto ${theme === 'dark' ? 'bg-[#0a0a0a]' : 'bg-[#e5e5e5]'}`}>
-                  <div className="relative inline-block" style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
+                  <div 
+                    className="relative inline-block" 
+                    style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}
+                    onMouseDown={(e) => handleMouseDown(e, 'build')}
+                  >
                     {liveSourceType === 'sim' && liveStream ? (
                       <>
                         <video ref={videoRef} autoPlay playsInline className="max-w-none" style={{ width: '390px' }} />
@@ -2315,11 +2334,13 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                       </>
                     ) : liveImage ? (
                       <>
-                        <img src={liveImage} className="max-h-none max-w-none" style={{ width: '390px' }} />
+                        <img src={liveImage} className="max-h-none max-w-none pointer-events-none" style={{ width: '390px' }} draggable={false} />
                         {renderDifferenceBoxes('build')}
                       </>
                     ) : (
-                      renderLiveSourceSelector()
+                      <div className="pointer-events-auto" onMouseDown={(e) => e.stopPropagation()}>
+                        {renderLiveSourceSelector()}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -2327,7 +2348,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
             </div>
             {/* Foreground (Design) - Clipped using clip-path to maintain alignment */}
             <div 
-              className="absolute z-10 pointer-events-none"
+              className="absolute z-10"
               style={{ 
                 top: '20px',
                 left: '20px',
@@ -2337,15 +2358,16 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                 opacity: opacity
               }}
             >
-              <div className="w-full h-full flex items-center justify-center overflow-hidden">
+                  <div className="w-full h-full flex items-center justify-center overflow-hidden">
                 {image ? (
                   <div 
-                    className="origin-center"
+                    className="origin-center cursor-move pointer-events-auto"
                     style={{
                       transform: `translate(${position.x}px, ${position.y}px) scale(${scale})`,
                     }}
+                    onMouseDown={(e) => handleMouseDown(e, 'design')}
                   >
-                    <img src={image} className="max-w-none" style={{ width: '390px' }} draggable={false} />
+                    <img src={image} className="max-w-none pointer-events-none" style={{ width: '390px' }} draggable={false} />
                   </div>
                 ) : (
                   <div className="pointer-events-auto">
@@ -2546,7 +2568,42 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
           ? 'bg-[#1e1e1e] border-[#383838] text-[#e0e0e0]' 
           : 'bg-white border-[#e0e0e0] text-[#1a1a1a]'
       }`}>
-        {differences.length > 0 ? (
+        {differences.length > 0 && (
+          <>
+            {/* Tab Header */}
+            <div className={`flex border-b ${theme === 'dark' ? 'border-white/10' : 'border-black/5'}`}>
+              <button 
+                onClick={() => setActivePanel('controls')}
+                className={`flex-1 py-3 text-center text-xs font-semibold transition-colors ${
+                  activePanel === 'controls'
+                    ? (theme === 'dark' ? 'text-white border-b-2 border-indigo-500' : 'text-indigo-600 border-b-2 border-indigo-500')
+                    : (theme === 'dark' ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700')
+                }`}
+              >
+                控制面板
+              </button>
+              <button 
+                onClick={() => setActivePanel('differences')}
+                className={`flex-1 py-3 text-center text-xs font-semibold transition-colors relative ${
+                  activePanel === 'differences'
+                    ? (theme === 'dark' ? 'text-white border-b-2 border-indigo-500' : 'text-indigo-600 border-b-2 border-indigo-500')
+                    : (theme === 'dark' ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700')
+                }`}
+              >
+                差异列表
+                <span className={`ml-1 text-[10px] px-2 py-0.5 rounded-full ${
+                  activePanel === 'differences'
+                    ? (theme === 'dark' ? 'bg-indigo-500/30 text-indigo-400' : 'bg-indigo-100 text-indigo-600')
+                    : (theme === 'dark' ? 'bg-gray-700/50 text-gray-400' : 'bg-gray-200 text-gray-600')
+                }`}>
+                  {differences.length}
+                </span>
+              </button>
+            </div>
+          </>
+        )}
+
+        {differences.length > 0 && activePanel === 'differences' ? (
           <div className="flex flex-col flex-1 overflow-hidden">
             <div className={`p-4 border-b flex items-center justify-between ${theme === 'dark' ? 'border-white/10' : 'border-black/5'}`}>
               <h2 className="text-sm font-bold uppercase tracking-wider">Differences List</h2>
@@ -2946,7 +3003,7 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                         </div>
                         <div className="flex gap-2">
                           <div className="w-12 h-12 rounded border border-white/10 overflow-hidden shrink-0">
-                            <img src={result.designImage} className="w-full h-full object-cover" />
+                            <img src={result.designImage} className="w-full h-full object-cover" draggable={false} />
                           </div>
                           <div className="flex-1 min-w-0">
                             <p className="text-[10px] text-gray-500">
@@ -3209,10 +3266,10 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
                       
                       <div className="flex gap-2 mb-2">
                         <div className="flex-1 aspect-video rounded-lg bg-black/5 overflow-hidden border border-black/5">
-                          <img src={round.designImage} alt="Design" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          <img src={round.designImage} alt="Design" className="w-full h-full object-cover" referrerPolicy="no-referrer" draggable={false} />
                         </div>
                         <div className="flex-1 aspect-video rounded-lg bg-black/5 overflow-hidden border border-black/5">
-                          <img src={round.buildImage} alt="Build" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                          <img src={round.buildImage} alt="Build" className="w-full h-full object-cover" referrerPolicy="no-referrer" draggable={false} />
                         </div>
                       </div>
 
