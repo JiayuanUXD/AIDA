@@ -452,7 +452,6 @@ function DesignChecker({ resolvedTheme }: { resolvedTheme: 'light' | 'dark' }) {
     if (projectId) {
       const loadProject = async () => {
         setIsLoading(true);
-        setIsOwner(true);
         try {
           const docSnap = await getDoc(doc('projects', projectId));
           if (docSnap.exists()) {
