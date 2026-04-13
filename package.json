@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "tsx api/index.ts",
     "dev:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && PORT=3001 DATA_DIR_NAME=data-opt tsx api/index.ts",
-    "build": "vite build",
+    "build": "vite build && npm run build:api",
+    "build:api": "tsc --project tsconfig.json",
+    "start": "node dist/api/index.js",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
