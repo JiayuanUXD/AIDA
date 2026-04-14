@@ -9,3 +9,8 @@ coverage/
 data-opt/
 dev-opt.db*
 .worktrees/
+
+# amplify
+.amplify
+amplify_outputs*
+amplifyconfiguration*
