@@ -9,6 +9,21 @@ steps:
 - name: 'gcr.io/cloud-builders/docker'
   args: ['push', 'asia-east2-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/aida:$COMMIT_SHA']
 
+# Deploy step
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  entrypoint: gcloud
+  args:
+  - 'run'
+  - 'deploy'
+  - 'aida'
+  - '--image'
+  - 'asia-east2-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/aida:$COMMIT_SHA'
+  - '--region'
+  - 'asia-east2'
+  - '--platform'
+  - 'managed'
+  - '--allow-unauthenticated'
+
 images:
 - 'asia-east2-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/aida:$COMMIT_SHA'
 
