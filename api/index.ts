@@ -22,17 +22,25 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 // Vite dev middleware must be mounted BEFORE API routes so that it can serve
-// index.html for non-API requests. We use a top-level await here because the
-// file already uses ESM and the server must be ready before routes are registered.
+// index.html for non-API requests.
+// In FaaS / read-only filesystem environments Vite cannot write its temp files,
+// so we wrap the initialisation in a try/catch and fall back to serving the
+// pre-built dist/ folder (production mode) when it fails.
+let viteInitFailed = false;
 if (process.env.NODE_ENV !== "production") {
-  const vite = await createViteServer({
-    server: {
-      middlewareMode: true,
-      hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 },
-    },
-    appType: "spa",
-  });
-  app.use(vite.middlewares);
+  try {
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 },
+      },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } catch (err) {
+    console.warn("[server] Vite dev server failed to start (read-only fs?), falling back to static dist/ serving:", (err as Error).message);
+    viteInitFailed = true;
+  }
 }
 
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
@@ -903,13 +911,14 @@ app.all("/api/*", (req, res) => {
   });
 });
 
-// Configure static serving and catch-all for non-API routes
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(process.cwd(), "dist")));
+// Configure static serving and catch-all for non-API routes.
+// Also activated when Vite dev server failed to start (e.g. read-only FaaS fs).
+if (process.env.NODE_ENV === "production" || viteInitFailed) {
+  const distDir = path.join(process.cwd(), "dist");
+  app.use(express.static(distDir));
   app.get("*", (req, res) => {
-    // Only serve index.html if it's not an API route (already handled above)
     if (!req.url.startsWith('/api')) {
-      res.sendFile(path.join(process.cwd(), "dist/index.html"));
+      res.sendFile(path.join(distDir, "index.html"));
     } else {
       res.status(404).json({ error: "API route not found" });
     }
