@@ -7,8 +7,11 @@
     "dev": "tsx api/index.ts",
     "dev:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && PORT=3001 DATA_DIR_NAME=data-opt tsx api/index.ts",
     "build": "vite build",
+    "build:server": "tsc -p tsconfig.build.json",
+    "build:all": "npm run build && npm run build:server",
+    "start": "NODE_ENV=production node dist-server/api/index.js",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
