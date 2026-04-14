@@ -21,6 +21,20 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
+// Vite dev middleware must be mounted BEFORE API routes so that it can serve
+// index.html for non-API requests. We use a top-level await here because the
+// file already uses ESM and the server must be ready before routes are registered.
+if (process.env.NODE_ENV !== "production") {
+  const vite = await createViteServer({
+    server: {
+      middlewareMode: true,
+      hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 },
+    },
+    appType: "spa",
+  });
+  app.use(vite.middlewares);
+}
+
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
 const DATA_DIR = path.join(process.cwd(), DATA_DIR_NAME);
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
@@ -903,18 +917,6 @@ if (process.env.NODE_ENV === "production") {
 }
 
 async function startServer() {
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { 
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 } // 使用不同端口避免 HMR 冲突
-      },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  }
-
   // 火山引擎环境优化：使用环境变量指定的端口，默认为3000
   const server = app.listen(PORT, "0.0.0.0", () => {
     const serverUrl = process.env.NODE_ENV === "production" 
