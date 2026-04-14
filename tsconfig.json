@@ -21,10 +21,9 @@
       ]
     },
     "noEmit": false,
-    "outDir": "dist"
+    "outDir": "dist-server"
   },
   "include": [
-    "api/**/*",
-    "src/**/*"
+    "api/**/*"
   ]
 }

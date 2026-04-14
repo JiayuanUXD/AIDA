@@ -1,23 +1,37 @@
-# 使用Node.js 18作为基础镜像
-FROM node:18-alpine
+# --- Build Stage ---
+FROM node:18-alpine AS builder
 
-# 设置工作目录
 WORKDIR /app
 
-# 复制package.json和package-lock.json
+# Copy package files and install ALL dependencies
 COPY package*.json ./
-
-# 安装依赖
 RUN npm install
 
-# 复制项目文件
+# Copy source files
 COPY . .
 
-# 构建项目
+# Build frontend and backend
+# npm run build executes: vite build && tsc --project tsconfig.json
 RUN npm run build
 
-# 暴露端口
+# --- Production Stage ---
+FROM node:18-alpine AS runner
+
+WORKDIR /app
+
+# Set production environment
+ENV NODE_ENV=production
+
+# Copy only production dependencies
+COPY package*.json ./
+RUN npm install --omit=dev
+
+# Copy built assets and backend from builder stage
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/dist-server ./dist-server
+
+# Expose port (Cloud Run primarily uses the PORT environment variable)
 EXPOSE 3000
 
-# 启动命令
+# Start the server
 CMD ["npm", "run", "start"]
