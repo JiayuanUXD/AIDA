@@ -1,5 +1,5 @@
 import express from "express";
-import { createServer as createViteServer } from "vite";
+// import { createServer as createViteServer } from "vite"; // Removed to prevent production load-time crash
 import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
@@ -926,14 +926,20 @@ if (process.env.NODE_ENV === "production") {
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { 
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 } // 使用不同端口避免 HMR 冲突
-      },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
+    try {
+      // Dynamic import to avoid crash in production where vite is not installed
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({
+        server: { 
+          middlewareMode: true,
+          hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 }
+        },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } catch (err) {
+      console.error("Failed to load Vite dev server:", err);
+    }
   }
 
   // 谷歌云环境优化：使用环境变量指定的端口，默认为3000

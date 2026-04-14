@@ -33,5 +33,5 @@ COPY --from=builder /app/dist-server ./dist-server
 # Expose port (Cloud Run primarily uses the PORT environment variable)
 EXPOSE 3000
 
-# Start the server
-CMD ["npm", "run", "start"]
+# Start the server directly to ensure better signal handling and port listening
+CMD ["node", "dist-server/api/index.js"]
