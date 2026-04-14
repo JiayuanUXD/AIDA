@@ -21,8 +21,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
+const isCloudRun = Boolean(process.env.K_SERVICE);
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-const DATA_DIR = path.join(process.cwd(), DATA_DIR_NAME);
+// Cloud Run filesystem is read-only except for /tmp
+const DATA_DIR = isCloudRun 
+  ? path.join("/tmp", DATA_DIR_NAME)
+  : path.join(process.cwd(), DATA_DIR_NAME);
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const ALLOWED_COLLECTIONS = new Set(["projects", "categories", "analysisResults", "rounds"]);
 const PROJECT_ROUNDS_COLLECTION_REGEX = /^projects_[a-zA-Z0-9_-]+_rounds$/;
@@ -56,9 +60,16 @@ if (isGoogleCloudStorageEnabled) {
   }
 }
 
-// 确保数据目录存在
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+// 确保数据目录存在（增加错误处理以防只读文件系统）
+try {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+} catch (err) {
+  console.error('Failed to create data directories:', err);
+  if (!isGoogleCloudStorageEnabled) {
+    console.warn('Warning: Local storage will not work. GCS is also not enabled.');
+  }
+}
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
@@ -963,6 +974,17 @@ async function startServer() {
     process.exit(1);
   });
 }
+
+// Global error handlers for better Cloud Run logging
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+  // Give it a moment to flush logs before exiting
+  setTimeout(() => process.exit(1), 100);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 startServer();
 
