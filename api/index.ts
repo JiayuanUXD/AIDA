@@ -916,24 +916,28 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-async function startServer() {
-  // 火山引擎环境优化：使用环境变量指定的端口，默认为3000
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    const serverUrl = process.env.NODE_ENV === "production" 
-      ? `http://0.0.0.0:${PORT}` 
-      : `http://localhost:${PORT}`;
-    console.log(`🚀 Server running on ${serverUrl}`);
-    console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`💾 Storage: ${isOSSEnabled ? 'Aliyun OSS' : 'Local File System'}`);
-  });
+async function startServer(port: number = PORT, retries: number = 10) {
+  return new Promise<void>((resolve, reject) => {
+    const server = app.listen(port, "0.0.0.0", () => {
+      const serverUrl = process.env.NODE_ENV === "production"
+        ? `http://0.0.0.0:${port}`
+        : `http://localhost:${port}`;
+      console.log(`Server running on ${serverUrl}`);
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`Storage: ${isOSSEnabled ? 'Aliyun OSS' : 'Local File System'}`);
+      resolve();
+    });
 
-  server.on('error', (err: any) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
-      process.exit(1);
-    }
-    console.error('❌ Server startup error:', err);
-    process.exit(1);
+    server.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE' && retries > 0) {
+        console.warn(`Port ${port} is in use, trying port ${port + 1}...`);
+        server.close();
+        startServer(port + 1, retries - 1).then(resolve).catch(reject);
+      } else {
+        console.error('Server startup error:', err);
+        reject(err);
+      }
+    });
   });
 }
 
