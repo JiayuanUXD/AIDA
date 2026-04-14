@@ -34,4 +34,4 @@ COPY --from=builder /app/dist-server ./dist-server
 EXPOSE 3000
 
 # Start the server directly to ensure better signal handling and port listening
-CMD ["node", "dist-server/api/index.js"]
+CMD ["node", "dist-server/index.js"]
