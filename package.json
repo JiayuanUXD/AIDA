@@ -10,7 +10,7 @@
     "build": "vite build",
     "build:server": "tsc -p tsconfig.build.json",
     "build:all": "npm run build && npm run build:server",
-    "start": "NODE_ENV=production node dist-server/api/index.js",
+    "start": "NODE_ENV=production node dist-server/index.js",
     "preview": "vite preview",
     "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit"
