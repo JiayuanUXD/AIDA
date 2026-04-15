@@ -4,7 +4,7 @@
 
 # Run and deploy your AI Studio app
 
-This contains everything you need to run your app locally and on Aliyun.
+This contains everything you need to run your app locally and on Volcano Engine.
 
 View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53ab8a8db
 
@@ -18,39 +18,6 @@ View your app in AI Studio: https://ai.studio/apps/a7f9bf0b-d43c-4db5-9e97-8ef53
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
 3. Run the app:
    `npm run dev`
-
-## Deploy to Aliyun (Aliyun OSS)
-
-### 1. Create Aliyun OSS bucket and set env vars
-
-In your Aliyun project, add these Environment Variables:
-
-- `OSS_REGION` (required for OSS storage, e.g., `oss-cn-hangzhou`)
-- `OSS_ACCESS_KEY_ID` (required for OSS access)
-- `OSS_ACCESS_KEY_SECRET` (required for OSS access)
-- `OSS_BUCKET` (required for OSS storage)
-
-Also set your existing keys as needed:
-
-- `GEMINI_API_KEY`
-- `FIGMA_ACCESS_TOKEN`
-- `APIYI_API_KEY`
-- `APIYI_MODEL_ID`
-- `APIYI_API_URL`
-
-### 2. Data behavior
-
-- With Aliyun OSS configured: `/api/db/*` data is stored in OSS `db/` directory.
-- Uploaded files are stored in OSS `uploads/` directory.
-- If OSS is not configured, DB/file storage falls back to local filesystem.
-
-### 3. Deploy
-
-1. Push to your GitHub repository.
-2. Deploy to Aliyun ECS or Container Service.
-3. Configure the env vars above.
-4. Run `npm run build` to build the frontend.
-5. Start the server: `node dist/api/index.js` or use PM2 for process management.
 
 ## Deploy to Volcano Engine
 
@@ -145,32 +112,31 @@ pm2 logs aida-app
 PM2 will automatically restart the service if it crashes.
 
 #### 4.3 Backup Strategy
-- Regularly backup your OSS data
+- Regularly backup your TOS data
 - Consider setting up automated backups for critical data
 
 ## 版本记录
 
-### 2026-04-13（火山引擎部署版本）
+### 2026-04-15（火山引擎部署版本）
 
-- 存储方案升级为阿里云 OSS：
-  - `/api/db/*` 数据改为 OSS `db/` 目录存储。
-  - `/api/storage/*` 图片/文件改为 OSS `uploads/` 目录存储。
-  - 移除 Vercel Blob 依赖与配置说明，统一为阿里云 OSS 配置。
-- 移除 Vercel 部署相关代码：
-  - 删除 `vercel.json` 配置文件。
-  - 删除 `api/[[...path]].ts` Vercel serverless 函数。
-  - 移除 `dev:vercel:opt` 脚本。
-- 服务器启动逻辑优化：
-  - 移除 Vercel 环境检测，确保在所有环境中正常启动。
-  - 简化启动流程，使其更加通用。
-  - 增加详细的启动日志，便于在火山引擎环境中调试。
+- 存储方案升级为火山引擎 TOS：
+  - `/api/db/*` 数据改为 TOS `db/` 目录存储。
+  - `/api/storage/*` 图片/文件改为 TOS `uploads/` 目录存储。
+  - 移除 AWS 和阿里云 OSS 依赖与配置说明，统一为火山引擎 TOS 配置。
+- 移除 AWS 相关代码：
+  - 删除 AWS Amplify 配置文件和依赖。
+  - 删除 AWS Lambda 下载脚本。
+  - 移除 AWS SDK 依赖。
+- 移除阿里云 OSS 相关代码：
+  - 删除阿里云 OSS 客户端和配置。
+  - 移除所有 OSS 相关的存储操作逻辑。
+  - 更新健康检查和启动日志。
 - 环境变量配置优化：
-  - 添加火山引擎部署相关的环境变量配置。
-  - 优化环境变量加载顺序，确保配置正确。
+  - 移除阿里云 OSS 相关的环境变量配置。
+  - 保留火山引擎 TOS 相关的配置。
 - 部署文档完善：
-  - 添加火山引擎部署详细指南。
-  - 提供 ECS 实例配置和依赖安装步骤。
-  - 包含监控和维护建议。
+  - 移除阿里云部署相关文档。
+  - 完善火山引擎部署指南。
 - 类型安全优化：
   - 修复 TypeScript 编译错误。
   - 确保代码类型安全。
