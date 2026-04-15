@@ -77,9 +77,15 @@ if (isOSSEnabled) {
   });
 }
 
-// 确保数据目录存在
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+// 确保数据目录存在（只读文件系统时跳过，OSS 模式下不需要本地目录）
+if (!isOSSEnabled) {
+  try {
+    if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+    if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+  } catch (err: any) {
+    console.warn("[server] Could not create local data directories (read-only fs?). Using OSS or in-memory fallback:", err.message);
+  }
+}
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);

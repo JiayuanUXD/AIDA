@@ -5,12 +5,18 @@ import {defineConfig, loadEnv} from 'vite';
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
+  // Only expose env vars prefixed with VITE_ to the client bundle.
+  // Never inline secret API keys (GEMINI_API_KEY, OSS_*, etc.) into the bundle
+  // as they would be visible in the browser's source panel.
+  // All AI calls go through the Express backend (/api/*) which reads keys server-side.
+  const vitePublicEnv = Object.fromEntries(
+    Object.entries(env)
+      .filter(([key]) => key.startsWith('VITE_'))
+      .map(([key, value]) => [`import.meta.env.${key}`, JSON.stringify(value)])
+  );
   return {
     plugins: [react(), tailwindcss()],
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || env.GEMINI_API_KEY || ""),
-      'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(process.env.GEMINI_API_KEY || env.GEMINI_API_KEY || ""),
-    },
+    define: vitePublicEnv,
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
