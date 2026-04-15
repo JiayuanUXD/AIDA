@@ -109,9 +109,13 @@ if (isTOSEnabled) {
 // 统一的对象存储状态
 const isCloudStorageEnabled = isOSSEnabled || isTOSEnabled;
 
-// 确保数据目录存在
-if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
-if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+// 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
+try {
+  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+} catch (err) {
+  console.warn('[server] Cannot create local data directories (read-only fs?). Cloud storage will be used:', (err as Error).message);
+}
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
@@ -192,36 +196,28 @@ const readCollection = async (collection: string) => {
 const writeCollection = async (collection: string, data: any[]) => {
   // 优先使用阿里云 OSS
   if (isOSSEnabled && ossClient) {
-    try {
-      const ossPath = getOSSDBPath(collection);
-      await ossClient.put(ossPath, JSON.stringify(data, null, 2), {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8'
-        }
-      });
-      return;
-    } catch (err) {
-      console.error(`Error writing OSS collection ${collection}:`, err);
-    }
+    const ossPath = getOSSDBPath(collection);
+    await ossClient.put(ossPath, JSON.stringify(data, null, 2), {
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8'
+      }
+    });
+    return;
   }
 
   // 其次使用火山引擎 TOS
   if (isTOSEnabled && tosClient) {
-    try {
-      const tosPath = getTOSDBPath(collection);
-      const content = JSON.stringify(data, null, 2);
-      await tosClient.putObject({
-        bucket: TOS_BUCKET!,
-        key: tosPath,
-        body: Buffer.from(content, 'utf-8'),
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-        },
-      });
-      return;
-    } catch (err) {
-      console.error(`Error writing TOS collection ${collection}:`, err);
-    }
+    const tosPath = getTOSDBPath(collection);
+    const content = JSON.stringify(data, null, 2);
+    await tosClient.putObject({
+      bucket: TOS_BUCKET!,
+      key: tosPath,
+      body: Buffer.from(content, 'utf-8'),
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+      },
+    });
+    return;
   }
 
   // 回退到本地文件系统
@@ -311,15 +307,20 @@ app.post("/api/db/:collection", async (req, res) => {
   if (!isAllowedCollection(collection)) {
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
-  const data = await readCollection(collection);
-  const newDoc = {
-    ...req.body,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
-  data.push(newDoc);
-  await writeCollection(collection, data);
-  res.json(newDoc);
+  try {
+    const data = await readCollection(collection);
+    const newDoc = {
+      ...req.body,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    data.push(newDoc);
+    await writeCollection(collection, data);
+    res.json(newDoc);
+  } catch (err: any) {
+    console.error(`[POST /api/db/${collection}] Error:`, err);
+    res.status(500).json({ error: err.message || 'Failed to save data' });
+  }
 });
 
 app.put("/api/db/:collection/:id", async (req, res) => {
@@ -327,17 +328,22 @@ app.put("/api/db/:collection/:id", async (req, res) => {
   if (!isAllowedCollection(collection)) {
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
-  const data = await readCollection(collection);
-  const index = data.findIndex((d: any) => d.id === req.params.id);
-  if (index === -1) {
-    const newDoc = { ...req.body, id: req.params.id, updatedAt: Date.now() };
-    data.push(newDoc);
+  try {
+    const data = await readCollection(collection);
+    const index = data.findIndex((d: any) => d.id === req.params.id);
+    if (index === -1) {
+      const newDoc = { ...req.body, id: req.params.id, updatedAt: Date.now() };
+      data.push(newDoc);
+      await writeCollection(collection, data);
+      return res.json(newDoc);
+    }
+    data[index] = { ...data[index], ...req.body, updatedAt: Date.now() };
     await writeCollection(collection, data);
-    return res.json(newDoc);
+    res.json(data[index]);
+  } catch (err: any) {
+    console.error(`[PUT /api/db/${collection}/${req.params.id}] Error:`, err);
+    res.status(500).json({ error: err.message || 'Failed to save data' });
   }
-  data[index] = { ...data[index], ...req.body, updatedAt: Date.now() };
-  await writeCollection(collection, data);
-  res.json(data[index]);
 });
 
 app.delete("/api/db/:collection/:id", async (req, res) => {
@@ -345,10 +351,15 @@ app.delete("/api/db/:collection/:id", async (req, res) => {
   if (!isAllowedCollection(collection)) {
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
-  const data = await readCollection(collection);
-  const filtered = data.filter((d: any) => d.id !== req.params.id);
-  await writeCollection(collection, filtered);
-  res.json({ success: true });
+  try {
+    const data = await readCollection(collection);
+    const filtered = data.filter((d: any) => d.id !== req.params.id);
+    await writeCollection(collection, filtered);
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error(`[DELETE /api/db/${collection}/${req.params.id}] Error:`, err);
+    res.status(500).json({ error: err.message || 'Failed to delete data' });
+  }
 });
 
 // --- Storage Endpoints ---
