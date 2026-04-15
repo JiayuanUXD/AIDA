@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
 import OSS from 'ali-oss';
+import TOS from '@volcengine/tos-sdk';
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -22,7 +23,10 @@ const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-const DATA_DIR = path.join(process.cwd(), DATA_DIR_NAME);
+// Support absolute paths (e.g., /mnt/tos) for mounted storage
+const DATA_DIR = DATA_DIR_NAME.startsWith('/') 
+  ? DATA_DIR_NAME 
+  : path.join(process.cwd(), DATA_DIR_NAME);
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const ALLOWED_COLLECTIONS = new Set(["projects", "categories", "analysisResults", "rounds"]);
 const PROJECT_ROUNDS_COLLECTION_REGEX = /^projects_[a-zA-Z0-9_-]+_rounds$/;
@@ -55,6 +59,34 @@ if (isOSSEnabled) {
   });
 }
 
+// 火山引擎 TOS 配置
+const TOS_REGION = process.env.TOS_REGION;
+const TOS_ACCESS_KEY = process.env.TOS_ACCESS_KEY;
+const TOS_SECRET_KEY = process.env.TOS_SECRET_KEY;
+const TOS_BUCKET = process.env.TOS_BUCKET;
+const TOS_ENDPOINT = process.env.TOS_ENDPOINT;
+const isTOSEnabled = Boolean(TOS_REGION && TOS_ACCESS_KEY && TOS_SECRET_KEY && TOS_BUCKET && TOS_ENDPOINT);
+
+// 初始化 TOS 客户端
+let tosClient: InstanceType<typeof TOS> | null = null;
+if (isTOSEnabled) {
+  try {
+    tosClient = new TOS({
+      accessKeyId: TOS_ACCESS_KEY!,
+      accessKeySecret: TOS_SECRET_KEY!,
+      region: TOS_REGION!,
+      endpoint: TOS_ENDPOINT!,
+      bucket: TOS_BUCKET!,
+    });
+    console.log('✅ Volcano Engine TOS client initialized');
+  } catch (err) {
+    console.error('❌ Failed to initialize TOS client:', err);
+  }
+}
+
+// 统一的对象存储状态
+const isCloudStorageEnabled = isOSSEnabled || isTOSEnabled;
+
 // 确保数据目录存在
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -63,10 +95,13 @@ if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
 const getOSSDBPath = (collection: string) => `db/${collection}.json`;
 const getOSSFilePath = (fileName: string) => `uploads/${fileName}`;
+const getTOSDBPath = (collection: string) => `db/${collection}.json`;
+const getTOSFilePath = (fileName: string) => `uploads/${fileName}`;
 
 const normalizeCollectionData = (data: unknown) => (Array.isArray(data) ? data : []);
 
 const readCollection = async (collection: string) => {
+  // 优先使用阿里云 OSS
   if (isOSSEnabled && ossClient) {
     try {
       const ossPath = getOSSDBPath(collection);
@@ -88,6 +123,31 @@ const readCollection = async (collection: string) => {
     }
   }
 
+  // 其次使用火山引擎 TOS
+  if (isTOSEnabled && tosClient) {
+    try {
+      const tosPath = getTOSDBPath(collection);
+      const { data } = await tosClient.getObjectV2({
+        bucket: TOS_BUCKET!,
+        key: tosPath,
+      });
+      const chunks: Buffer[] = [];
+      for await (const chunk of data.content as any) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const content = Buffer.concat(chunks).toString('utf-8');
+      if (content.trim()) {
+        return normalizeCollectionData(JSON.parse(content));
+      }
+    } catch (err: any) {
+      // TOS returns 'NoSuchKey' status code 404
+      if (err?.statusCode !== 404) {
+        console.error(`Error reading TOS collection ${collection}:`, err);
+      }
+    }
+  }
+
+  // 最后回退到本地文件系统
   try {
     const filePath = getDbPath(collection);
     if (!existsSync(filePath)) return [];
@@ -108,6 +168,7 @@ const readCollection = async (collection: string) => {
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
+  // 优先使用阿里云 OSS
   if (isOSSEnabled && ossClient) {
     try {
       const ossPath = getOSSDBPath(collection);
@@ -122,6 +183,26 @@ const writeCollection = async (collection: string, data: any[]) => {
     }
   }
 
+  // 其次使用火山引擎 TOS
+  if (isTOSEnabled && tosClient) {
+    try {
+      const tosPath = getTOSDBPath(collection);
+      const content = JSON.stringify(data, null, 2);
+      await tosClient.putObject({
+        bucket: TOS_BUCKET!,
+        key: tosPath,
+        body: Buffer.from(content, 'utf-8'),
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+      });
+      return;
+    } catch (err) {
+      console.error(`Error writing TOS collection ${collection}:`, err);
+    }
+  }
+
+  // 回退到本地文件系统
   const filePath = getDbPath(collection);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
@@ -164,9 +245,9 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-  const dbProvider = isOSSEnabled ? "aliyun-oss" : "local";
-  const storageProvider = isOSSEnabled ? "aliyun-oss" : "local";
-  res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider });
+  const dbProvider = isOSSEnabled ? "aliyun-oss" : isTOSEnabled ? "volc-tos" : "local";
+  const storageProvider = isOSSEnabled ? "aliyun-oss" : isTOSEnabled ? "volc-tos" : "local";
+  res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: DATA_DIR });
 });
 
 // Error handler for body-parser errors
@@ -256,18 +337,18 @@ app.post("/api/storage/upload", async (req, res) => {
   // Safe filename
   const fileName = String(filePath).replace(/[\\/]/g, '_');
 
+  // 解析 data URL
+  let body: string | Buffer = data;
+  let contentType = "text/plain; charset=utf-8";
+  const match = typeof data === "string" ? data.match(/^data:([^;]+);base64,(.+)$/) : null;
+  if (match) {
+    contentType = match[1];
+    body = Buffer.from(match[2], "base64");
+  }
+
   // Store uploads in Aliyun OSS
   if (isOSSEnabled && ossClient) {
     try {
-      let body: string | Buffer = data;
-      let contentType = "text/plain; charset=utf-8";
-
-      const match = typeof data === "string" ? data.match(/^data:([^;]+);base64,(.+)$/) : null;
-      if (match) {
-        contentType = match[1];
-        body = Buffer.from(match[2], "base64");
-      }
-
       const ossPath = getOSSFilePath(fileName);
       await ossClient.put(ossPath, body, {
         headers: {
@@ -281,12 +362,33 @@ app.post("/api/storage/upload", async (req, res) => {
     }
   }
 
+  // Store uploads in Volcano Engine TOS
+  if (isTOSEnabled && tosClient) {
+    try {
+      const tosPath = getTOSFilePath(fileName);
+      await tosClient.putObject({
+        bucket: TOS_BUCKET!,
+        key: tosPath,
+        body: typeof body === 'string' ? Buffer.from(body, 'utf-8') : body,
+        headers: {
+          'Content-Type': contentType,
+        },
+      });
+      return res.json({ success: true, url: `/api/storage/file/${fileName}` });
+    } catch (err: any) {
+      console.error("TOS storage upload error:", err);
+      return res.status(500).json({ error: err.message || "TOS storage upload failed" });
+    }
+  }
+
+  // 回退到本地文件系统
   const fullPath = path.join(UPLOADS_DIR, fileName);
-  await fs.writeFile(fullPath, data, "utf-8");
+  await fs.writeFile(fullPath, typeof body === 'string' ? body : data, "utf-8");
   res.json({ success: true, url: `/api/storage/file/${fileName}` });
 });
 
 app.get("/api/storage/file/:filename", async (req, res) => {
+  // 优先从阿里云 OSS 读取
   if (isOSSEnabled && ossClient) {
     try {
       const ossPath = getOSSFilePath(req.params.filename);
@@ -311,6 +413,33 @@ app.get("/api/storage/file/:filename", async (req, res) => {
     }
   }
 
+  // 其次从火山引擎 TOS 读取
+  if (isTOSEnabled && tosClient) {
+    try {
+      const tosPath = getTOSFilePath(req.params.filename);
+      const { data } = await tosClient.getObjectV2({
+        bucket: TOS_BUCKET!,
+        key: tosPath,
+      });
+      const chunks: Buffer[] = [];
+      for await (const chunk of data.content as any) {
+        chunks.push(Buffer.from(chunk));
+      }
+      const buffer = Buffer.concat(chunks);
+      const contentType = (data.headers as any)?.['content-type'] || 'application/octet-stream';
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      return res.send(buffer);
+    } catch (err: any) {
+      if (err?.statusCode === 404) {
+        return res.status(404).send("File not found");
+      }
+      console.error("TOS storage read error:", err);
+      return res.status(500).send("Read error");
+    }
+  }
+
+  // 回退到本地文件系统
   try {
     const fileName = req.params.filename;
     const fullPath = path.join(UPLOADS_DIR, fileName);
@@ -922,7 +1051,8 @@ async function startServer() {
       : `http://localhost:${PORT}`;
     console.log(`🚀 Server running on ${serverUrl}`);
     console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`💾 Storage: ${isOSSEnabled ? 'Aliyun OSS' : 'Local File System'}`);
+    console.log(`💾 Storage: ${isOSSEnabled ? 'Aliyun OSS' : isTOSEnabled ? 'Volcano Engine TOS' : 'Local File System'}`);
+    console.log(`📂 Data Dir: ${DATA_DIR}`);
   });
 
   server.on('error', (err: any) => {
