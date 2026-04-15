@@ -22,6 +22,28 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
+// Vite dev middleware must be mounted BEFORE API routes so that it can serve
+// index.html for non-API requests.
+// In FaaS / read-only filesystem environments Vite cannot write its temp files,
+// so we wrap the initialisation in a try/catch and fall back to serving the
+// pre-built dist/ folder (production mode) when it fails.
+let viteInitFailed = false;
+if (process.env.NODE_ENV !== "production") {
+  try {
+    const vite = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 },
+      },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } catch (err) {
+    console.warn("[server] Vite dev server failed to start (read-only fs?), falling back to static dist/ serving:", (err as Error).message);
+    viteInitFailed = true;
+  }
+}
+
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
 // Support absolute paths (e.g., /mnt/tos) for mounted storage
 const DATA_DIR = DATA_DIR_NAME.startsWith('/') 
@@ -1018,50 +1040,43 @@ app.all("/api/*", (req, res) => {
   });
 });
 
-// Configure static serving and catch-all for non-API routes
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(process.cwd(), "dist")));
+// Configure static serving and catch-all for non-API routes.
+// Also activated when Vite dev server failed to start (e.g. read-only FaaS fs).
+if (process.env.NODE_ENV === "production" || viteInitFailed) {
+  const distDir = path.join(process.cwd(), "dist");
+  app.use(express.static(distDir));
   app.get("*", (req, res) => {
-    // Only serve index.html if it's not an API route (already handled above)
     if (!req.url.startsWith('/api')) {
-      res.sendFile(path.join(process.cwd(), "dist/index.html"));
+      res.sendFile(path.join(distDir, "index.html"));
     } else {
       res.status(404).json({ error: "API route not found" });
     }
   });
 }
 
-async function startServer() {
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { 
-        middlewareMode: true,
-        hmr: process.env.DISABLE_HMR === "true" ? false : { port: 24679 } // 使用不同端口避免 HMR 冲突
-      },
-      appType: "spa",
+async function startServer(port: number = PORT, retries: number = 10) {
+  return new Promise<void>((resolve, reject) => {
+    const server = app.listen(port, "0.0.0.0", () => {
+      const serverUrl = process.env.NODE_ENV === "production"
+        ? `http://0.0.0.0:${port}`
+        : `http://localhost:${port}`;
+      console.log(`🚀 Server running on ${serverUrl}`);
+      console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`💾 Storage: ${isOSSEnabled ? 'Aliyun OSS' : isTOSEnabled ? 'Volcano Engine TOS' : 'Local File System'}`);
+      console.log(`📂 Data Dir: ${DATA_DIR}`);
+      resolve();
     });
-    app.use(vite.middlewares);
-  }
 
-  // 火山引擎环境优化：使用环境变量指定的端口，默认为3000
-  const server = app.listen(PORT, "0.0.0.0", () => {
-    const serverUrl = process.env.NODE_ENV === "production" 
-      ? `http://0.0.0.0:${PORT}` 
-      : `http://localhost:${PORT}`;
-    console.log(`🚀 Server running on ${serverUrl}`);
-    console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`💾 Storage: ${isOSSEnabled ? 'Aliyun OSS' : isTOSEnabled ? 'Volcano Engine TOS' : 'Local File System'}`);
-    console.log(`📂 Data Dir: ${DATA_DIR}`);
-  });
-
-  server.on('error', (err: any) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`\n❌ Error: Port ${PORT} is already in use. Please kill the existing process or try: PORT=${PORT + 1} npm run dev\n`);
-      process.exit(1);
-    }
-    console.error('❌ Server startup error:', err);
-    process.exit(1);
+    server.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE' && retries > 0) {
+        console.warn(`Port ${port} is in use, trying port ${port + 1}...`);
+        server.close();
+        startServer(port + 1, retries - 1).then(resolve).catch(reject);
+      } else {
+        console.error('❌ Server startup error:', err);
+        reject(err);
+      }
+    });
   });
 }
 
