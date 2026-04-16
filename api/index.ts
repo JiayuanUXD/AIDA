@@ -6,6 +6,7 @@ import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
 import { TOS } from '@volcengine/tos-sdk';
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -73,6 +74,13 @@ const TOS_BUCKET = process.env.TOS_BUCKET;
 const TOS_ENDPOINT = process.env.TOS_ENDPOINT;
 const isTOSEnabled = Boolean(TOS_REGION && TOS_ACCESS_KEY && TOS_SECRET_KEY && TOS_BUCKET && TOS_ENDPOINT);
 
+// AWS S3 配置
+const AWS_REGION = process.env.AWS_REGION;
+const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID;
+const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY;
+const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
+const isS3Enabled = Boolean(AWS_REGION && AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY && AWS_S3_BUCKET);
+
 // 初始化 TOS 客户端
 let tosClient: TOS | null = null;
 if (isTOSEnabled) {
@@ -90,8 +98,25 @@ if (isTOSEnabled) {
   }
 }
 
+// 初始化 S3 客户端
+let s3Client: S3Client | null = null;
+if (isS3Enabled) {
+  try {
+    s3Client = new S3Client({
+      region: AWS_REGION!,
+      credentials: {
+        accessKeyId: AWS_ACCESS_KEY_ID!,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY!,
+      },
+    });
+    console.log('✅ AWS S3 client initialized');
+  } catch (err) {
+    console.error('❌ Failed to initialize S3 client:', err);
+  }
+}
+
 // 统一的对象存储状态
-const isCloudStorageEnabled = isTOSEnabled;
+const isCloudStorageEnabled = isTOSEnabled || isS3Enabled;
 
 // 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
 try {
@@ -104,7 +129,9 @@ try {
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
 const getTOSDBPath = (collection: string) => `db/${collection}.json`;
+const getS3DBPath = (collection: string) => `db/${collection}.json`;
 const getTOSFilePath = (fileName: string) => `uploads/${fileName}`;
+const getS3FilePath = (fileName: string) => `uploads/${fileName}`;
 
 const normalizeCollectionData = (data: unknown) => (Array.isArray(data) ? data : []);
 
@@ -129,6 +156,34 @@ const readCollection = async (collection: string) => {
       // TOS returns 'NoSuchKey' status code 404
       if (err?.statusCode !== 404) {
         console.error(`Error reading TOS collection ${collection}:`, err);
+      }
+    }
+  }
+
+  // 使用 AWS S3
+  if (isS3Enabled && s3Client) {
+    try {
+      const s3Path = getS3DBPath(collection);
+      const command = new GetObjectCommand({
+        Bucket: AWS_S3_BUCKET!,
+        Key: s3Path,
+      });
+      const { Body } = await s3Client.send(command);
+      
+      if (Body) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of Body as any) {
+          chunks.push(Buffer.from(chunk));
+        }
+        const content = Buffer.concat(chunks).toString('utf-8');
+        if (content.trim()) {
+          return normalizeCollectionData(JSON.parse(content));
+        }
+      }
+    } catch (err: any) {
+      // S3 returns 'NoSuchKey' error for non-existent objects
+      if (err?.name !== 'NoSuchKey') {
+        console.error(`Error reading S3 collection ${collection}:`, err);
       }
     }
   }
@@ -166,6 +221,20 @@ const writeCollection = async (collection: string, data: any[]) => {
         'Content-Type': 'application/json; charset=utf-8',
       },
     });
+    return;
+  }
+
+  // 使用 AWS S3
+  if (isS3Enabled && s3Client) {
+    const s3Path = getS3DBPath(collection);
+    const content = JSON.stringify(data, null, 2);
+    const command = new PutObjectCommand({
+      Bucket: AWS_S3_BUCKET!,
+      Key: s3Path,
+      Body: Buffer.from(content, 'utf-8'),
+      ContentType: 'application/json; charset=utf-8',
+    });
+    await s3Client.send(command);
     return;
   }
 
@@ -212,8 +281,17 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-  const dbProvider = isTOSEnabled ? "volc-tos" : "local";
-  const storageProvider = isTOSEnabled ? "volc-tos" : "local";
+  let dbProvider = "local";
+  let storageProvider = "local";
+  
+  if (isTOSEnabled) {
+    dbProvider = "volc-tos";
+    storageProvider = "volc-tos";
+  } else if (isS3Enabled) {
+    dbProvider = "aws-s3";
+    storageProvider = "aws-s3";
+  }
+  
   res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: DATA_DIR });
 });
 
@@ -347,6 +425,24 @@ app.post("/api/storage/upload", async (req, res) => {
     }
   }
 
+  // Store uploads in AWS S3
+  if (isS3Enabled && s3Client) {
+    try {
+      const s3Path = getS3FilePath(fileName);
+      const command = new PutObjectCommand({
+        Bucket: AWS_S3_BUCKET!,
+        Key: s3Path,
+        Body: typeof body === 'string' ? Buffer.from(body, 'utf-8') : body,
+        ContentType: contentType,
+      });
+      await s3Client.send(command);
+      return res.json({ success: true, url: `/api/storage/file/${fileName}` });
+    } catch (err: any) {
+      console.error("S3 storage upload error:", err);
+      return res.status(500).json({ error: err.message || "S3 storage upload failed" });
+    }
+  }
+
   // 回退到本地文件系统
   const fullPath = path.join(UPLOADS_DIR, fileName);
   await fs.writeFile(fullPath, typeof body === 'string' ? body : data, "utf-8");
@@ -376,6 +472,36 @@ app.get("/api/storage/file/:filename", async (req, res) => {
         return res.status(404).send("File not found");
       }
       console.error("TOS storage read error:", err);
+      return res.status(500).send("Read error");
+    }
+  }
+
+  // 从 AWS S3 读取
+  if (isS3Enabled && s3Client) {
+    try {
+      const s3Path = getS3FilePath(req.params.filename);
+      const command = new GetObjectCommand({
+        Bucket: AWS_S3_BUCKET!,
+        Key: s3Path,
+      });
+      const { Body, ContentType } = await s3Client.send(command);
+      
+      if (Body) {
+        const chunks: Buffer[] = [];
+        for await (const chunk of Body as any) {
+          chunks.push(Buffer.from(chunk));
+        }
+        const buffer = Buffer.concat(chunks);
+        res.setHeader("Content-Type", ContentType || 'application/octet-stream');
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        return res.send(buffer);
+      }
+      return res.status(404).send("File not found");
+    } catch (err: any) {
+      if (err?.name === 'NoSuchKey') {
+        return res.status(404).send("File not found");
+      }
+      console.error("S3 storage read error:", err);
       return res.status(500).send("Read error");
     }
   }
@@ -698,7 +824,7 @@ async function startServer(port: number = PORT, retries: number = 10) {
         : `http://localhost:${port}`;
       console.log(`🚀 Server running on ${serverUrl}`);
       console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`💾 Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : 'Local File System'}`);
+      console.log(`💾 Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : isS3Enabled ? 'AWS S3' : 'Local File System'}`);
       console.log(`📂 Data Dir: ${DATA_DIR}`);
       resolve();
     });
