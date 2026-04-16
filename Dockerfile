@@ -1,37 +1,39 @@
-# --- Build Stage ---
+# ---- Stage 1: Build ----
 FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package files and install ALL dependencies
+# 安装依赖（含 devDependencies，编译阶段需要 vite / tsc / tsx）
 COPY package*.json ./
-RUN npm install
+RUN npm ci
 
-# Copy source files
+# 复制全部源码
 COPY . .
 
-# Build frontend and backend
-# npm run build executes: vite build && tsc --project tsconfig.json
-RUN npm run build
+# 构建前端（Vite -> dist/）和后端（tsc -> dist-server/）
+RUN npm run build:all
 
-# --- Production Stage ---
+
+# ---- Stage 2: Production ----
 FROM node:20-alpine AS runner
 
 WORKDIR /app
 
-# Set production environment
 ENV NODE_ENV=production
 
-# Copy only production dependencies
+# 仅安装生产依赖，不含 vite / typescript / tsx 等开发工具
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm ci --omit=dev
 
-# Copy built assets and backend from builder stage
+# 从 builder 阶段复制编译产物
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/dist-server ./dist-server
 
-# Expose port (Cloud Run primarily uses the PORT environment variable)
+# 预建本地数据目录（非挂载 volume 时使用）
+RUN mkdir -p data/uploads
+
+# 暴露服务端口（与 api/index.ts 中 PORT 默认值保持一致）
 EXPOSE 3000
 
-# Start the server directly to ensure better signal handling and port listening
-CMD ["node", "dist-server/index.js"]
+# 启动生产服务
+CMD ["npm", "run", "start"]

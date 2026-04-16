@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx api/index.ts",
+    "dev:faas": "NODE_ENV=production tsx api/index.ts",
     "dev:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && PORT=3001 DATA_DIR_NAME=data-opt tsx api/index.ts",
     "dev:dual": "sh -c 'npm run dev > /tmp/aida-port-3000.log 2>&1 & pid1=$!; npm run dev:opt > /tmp/aida-port-3001.log 2>&1 & pid2=$!; echo \"started 3000 pid=$pid1, 3001 pid=$pid2\"; wait $pid1 $pid2'",
     "build": "vite build",
@@ -12,13 +13,13 @@
     "build:all": "npm run build && npm run build:server",
     "start": "NODE_ENV=production node dist-server/api/index.js",
     "preview": "vite preview",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-server",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@google-cloud/storage": "^7.14.0",
     "@google/genai": "^1.29.0",
-    "aws-amplify": "^6.16.4",
+    "@volcengine/openapi": "^1.36.1",
+    "@volcengine/tos-sdk": "^2.9.1",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",
@@ -30,9 +31,11 @@
     "react-router-dom": "^7.13.1",
     "tailwind-merge": "^3.5.0"
   },
+  "overrides": {
+    "node-domexception": "npm:domexception@4.0.0",
+    "glob": "^11.0.0"
+  },
   "devDependencies": {
-    "@aws-amplify/backend": "^1.22.0",
-    "@aws-amplify/backend-cli": "^1.8.2",
     "@tailwindcss/vite": "^4.1.14",
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
@@ -41,8 +44,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
-    "aws-cdk-lib": "^2.234.1",
-    "constructs": "^10.6.0",
     "esbuild": "^0.28.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
