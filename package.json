@@ -5,9 +5,6 @@
   "type": "module",
   "scripts": {
     "dev": "tsx api/index.ts",
-    "dev:faas": "NODE_ENV=production tsx api/index.ts",
-    "dev:opt": "mkdir -p data-opt && cp -Rf data/. data-opt && PORT=3001 DATA_DIR_NAME=data-opt tsx api/index.ts",
-    "dev:dual": "sh -c 'npm run dev > /tmp/aida-port-3000.log 2>&1 & pid1=$!; npm run dev:opt > /tmp/aida-port-3001.log 2>&1 & pid2=$!; echo \"started 3000 pid=$pid1, 3001 pid=$pid2\"; wait $pid1 $pid2'",
     "build": "vite build",
     "build:server": "tsc -p tsconfig.build.json",
     "build:all": "npm run build && npm run build:server",
@@ -17,11 +14,8 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1030.0",
-    "@aws-sdk/s3-request-presigner": "^3.1030.0",
     "@google/genai": "^1.29.0",
-    "@volcengine/openapi": "^1.36.1",
-    "@volcengine/tos-sdk": "^2.9.1",
+    "@vercel/blob": "^2.3.3",
     "clsx": "^2.1.1",
     "cors": "^2.8.6",
     "dotenv": "^17.2.3",

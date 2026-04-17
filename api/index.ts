@@ -5,8 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { Readable } from "stream";
 import { GoogleGenAI } from "@google/genai";
-import { TOS } from '@volcengine/tos-sdk';
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { put, list } from "@vercel/blob";
 
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
@@ -66,57 +65,8 @@ const ALLOWED_PROXY_HOSTS = [
   "githubusercontent.com",
 ];
 
-// 火山引擎 TOS 配置
-const TOS_REGION = process.env.TOS_REGION;
-const TOS_ACCESS_KEY = process.env.TOS_ACCESS_KEY;
-const TOS_SECRET_KEY = process.env.TOS_SECRET_KEY;
-const TOS_BUCKET = process.env.TOS_BUCKET;
-const TOS_ENDPOINT = process.env.TOS_ENDPOINT;
-const isTOSEnabled = Boolean(TOS_REGION && TOS_ACCESS_KEY && TOS_SECRET_KEY && TOS_BUCKET && TOS_ENDPOINT);
-
-// AWS S3 配置
-const AWS_REGION = process.env.AWS_REGION;
-const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID;
-const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY;
-const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
-const isS3Enabled = Boolean(AWS_REGION && AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY && AWS_S3_BUCKET);
-
-// 初始化 TOS 客户端
-let tosClient: TOS | null = null;
-if (isTOSEnabled) {
-  try {
-    tosClient = new TOS({
-      accessKeyId: TOS_ACCESS_KEY!,
-      accessKeySecret: TOS_SECRET_KEY!,
-      region: TOS_REGION!,
-      endpoint: TOS_ENDPOINT!,
-      bucket: TOS_BUCKET!,
-    });
-    console.log('✅ Volcano Engine TOS client initialized');
-  } catch (err) {
-    console.error('❌ Failed to initialize TOS client:', err);
-  }
-}
-
-// 初始化 S3 客户端
-let s3Client: S3Client | null = null;
-if (isS3Enabled) {
-  try {
-    s3Client = new S3Client({
-      region: AWS_REGION!,
-      credentials: {
-        accessKeyId: AWS_ACCESS_KEY_ID!,
-        secretAccessKey: AWS_SECRET_ACCESS_KEY!,
-      },
-    });
-    console.log('✅ AWS S3 client initialized');
-  } catch (err) {
-    console.error('❌ Failed to initialize S3 client:', err);
-  }
-}
-
 // 统一的对象存储状态
-const isCloudStorageEnabled = isTOSEnabled || isS3Enabled;
+const isCloudStorageEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 // 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
 try {
@@ -128,67 +78,28 @@ try {
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
-const getTOSDBPath = (collection: string) => `db/${collection}.json`;
-const getS3DBPath = (collection: string) => `db/${collection}.json`;
-const getTOSFilePath = (fileName: string) => `uploads/${fileName}`;
-const getS3FilePath = (fileName: string) => `uploads/${fileName}`;
 
 const normalizeCollectionData = (data: unknown) => (Array.isArray(data) ? data : []);
 
 const readCollection = async (collection: string) => {
-  // 使用火山引擎 TOS
-  if (isTOSEnabled && tosClient) {
+  if (isCloudStorageEnabled) {
     try {
-      const tosPath = getTOSDBPath(collection);
-      const { data } = await tosClient.getObjectV2({
-        bucket: TOS_BUCKET!,
-        key: tosPath,
-      });
-      const chunks: Buffer[] = [];
-      for await (const chunk of data.content as any) {
-        chunks.push(Buffer.from(chunk));
+      const { blobs } = await list({ prefix: `db/${collection}.json` });
+      const exactMatch = blobs.find((b) => b.pathname === `db/${collection}.json`);
+      if (exactMatch) {
+        const response = await fetch(exactMatch.url);
+        if (response.ok) {
+          const content = await response.text();
+          if (content.trim()) {
+            return normalizeCollectionData(JSON.parse(content));
+          }
+        }
       }
-      const content = Buffer.concat(chunks).toString('utf-8');
-      if (content.trim()) {
-        return normalizeCollectionData(JSON.parse(content));
-      }
-    } catch (err: any) {
-      // TOS returns 'NoSuchKey' status code 404
-      if (err?.statusCode !== 404) {
-        console.error(`Error reading TOS collection ${collection}:`, err);
-      }
+    } catch (err) {
+      console.error(`Error reading Vercel Blob collection ${collection}:`, err);
     }
   }
 
-  // 使用 AWS S3
-  if (isS3Enabled && s3Client) {
-    try {
-      const s3Path = getS3DBPath(collection);
-      const command = new GetObjectCommand({
-        Bucket: AWS_S3_BUCKET!,
-        Key: s3Path,
-      });
-      const { Body } = await s3Client.send(command);
-      
-      if (Body) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of Body as any) {
-          chunks.push(Buffer.from(chunk));
-        }
-        const content = Buffer.concat(chunks).toString('utf-8');
-        if (content.trim()) {
-          return normalizeCollectionData(JSON.parse(content));
-        }
-      }
-    } catch (err: any) {
-      // S3 returns 'NoSuchKey' error for non-existent objects
-      if (err?.name !== 'NoSuchKey') {
-        console.error(`Error reading S3 collection ${collection}:`, err);
-      }
-    }
-  }
-
-  // 回退到本地文件系统
   try {
     const filePath = getDbPath(collection);
     if (!existsSync(filePath)) return [];
@@ -209,36 +120,19 @@ const readCollection = async (collection: string) => {
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
-  // 使用火山引擎 TOS
-  if (isTOSEnabled && tosClient) {
-    const tosPath = getTOSDBPath(collection);
-    const content = JSON.stringify(data, null, 2);
-    await tosClient.putObject({
-      bucket: TOS_BUCKET!,
-      key: tosPath,
-      body: Buffer.from(content, 'utf-8'),
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-      },
-    });
-    return;
+  if (isCloudStorageEnabled) {
+    try {
+      await put(`db/${collection}.json`, JSON.stringify(data, null, 2), {
+        access: 'public',
+        addRandomSuffix: false,
+        contentType: 'application/json; charset=utf-8'
+      });
+      return;
+    } catch (err) {
+      console.error(`Error writing to Vercel Blob collection ${collection}:`, err);
+    }
   }
 
-  // 使用 AWS S3
-  if (isS3Enabled && s3Client) {
-    const s3Path = getS3DBPath(collection);
-    const content = JSON.stringify(data, null, 2);
-    const command = new PutObjectCommand({
-      Bucket: AWS_S3_BUCKET!,
-      Key: s3Path,
-      Body: Buffer.from(content, 'utf-8'),
-      ContentType: 'application/json; charset=utf-8',
-    });
-    await s3Client.send(command);
-    return;
-  }
-
-  // 回退到本地文件系统
   const filePath = getDbPath(collection);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
@@ -281,18 +175,13 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-  let dbProvider = "local";
-  let storageProvider = "local";
-  
-  if (isTOSEnabled) {
-    dbProvider = "volc-tos";
-    storageProvider = "volc-tos";
-  } else if (isS3Enabled) {
-    dbProvider = "aws-s3";
-    storageProvider = "aws-s3";
-  }
-  
-  res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: DATA_DIR });
+  res.json({ 
+    status: "ok", 
+    env: process.env.NODE_ENV, 
+    dbProvider: isCloudStorageEnabled ? 'vercel-blob' : 'local', 
+    storageProvider: isCloudStorageEnabled ? 'vercel-blob' : 'local', 
+    dataDir: DATA_DIR 
+  });
 });
 
 // Error handler for body-parser errors
@@ -406,107 +295,38 @@ app.post("/api/storage/upload", async (req, res) => {
     body = Buffer.from(match[2], "base64");
   }
 
-  // Store uploads in Volcano Engine TOS
-  if (isTOSEnabled && tosClient) {
+  if (isCloudStorageEnabled) {
     try {
-      const tosPath = getTOSFilePath(fileName);
-      await tosClient.putObject({
-        bucket: TOS_BUCKET!,
-        key: tosPath,
-        body: typeof body === 'string' ? Buffer.from(body, 'utf-8') : body,
-        headers: {
-          'Content-Type': contentType,
-        },
+      await put(`uploads/${fileName}`, typeof body === 'string' ? Buffer.from(body, 'utf-8') : body, {
+        access: 'public',
+        addRandomSuffix: false,
+        contentType: contentType
       });
       return res.json({ success: true, url: `/api/storage/file/${fileName}` });
     } catch (err: any) {
-      console.error("TOS storage upload error:", err);
-      return res.status(500).json({ error: err.message || "TOS storage upload failed" });
+      console.error("Vercel Blob upload error:", err);
+      return res.status(500).json({ error: err.message || "Vercel Blob upload failed" });
     }
   }
 
-  // Store uploads in AWS S3
-  if (isS3Enabled && s3Client) {
-    try {
-      const s3Path = getS3FilePath(fileName);
-      const command = new PutObjectCommand({
-        Bucket: AWS_S3_BUCKET!,
-        Key: s3Path,
-        Body: typeof body === 'string' ? Buffer.from(body, 'utf-8') : body,
-        ContentType: contentType,
-      });
-      await s3Client.send(command);
-      return res.json({ success: true, url: `/api/storage/file/${fileName}` });
-    } catch (err: any) {
-      console.error("S3 storage upload error:", err);
-      return res.status(500).json({ error: err.message || "S3 storage upload failed" });
-    }
-  }
-
-  // 回退到本地文件系统
   const fullPath = path.join(UPLOADS_DIR, fileName);
   await fs.writeFile(fullPath, typeof body === 'string' ? body : data, "utf-8");
   res.json({ success: true, url: `/api/storage/file/${fileName}` });
 });
 
 app.get("/api/storage/file/:filename", async (req, res) => {
-  // 从火山引擎 TOS 读取
-  if (isTOSEnabled && tosClient) {
+  if (isCloudStorageEnabled) {
     try {
-      const tosPath = getTOSFilePath(req.params.filename);
-      const { data } = await tosClient.getObjectV2({
-        bucket: TOS_BUCKET!,
-        key: tosPath,
-      });
-      const chunks: Buffer[] = [];
-      for await (const chunk of data.content as any) {
-        chunks.push(Buffer.from(chunk));
+      const { blobs } = await list({ prefix: `uploads/${req.params.filename}` });
+      const exactMatch = blobs.find((b) => b.pathname === `uploads/${req.params.filename}`);
+      if (exactMatch) {
+         return res.redirect(302, exactMatch.url);
       }
-      const buffer = Buffer.concat(chunks);
-      const contentType = (data as any).metadata?.['content-type'] || 'application/octet-stream';
-      res.setHeader("Content-Type", contentType);
-      res.setHeader("Cache-Control", "public, max-age=86400");
-      return res.send(buffer);
     } catch (err: any) {
-      if (err?.statusCode === 404) {
-        return res.status(404).send("File not found");
-      }
-      console.error("TOS storage read error:", err);
-      return res.status(500).send("Read error");
+      console.error("Vercel Blob read error:", err);
     }
   }
 
-  // 从 AWS S3 读取
-  if (isS3Enabled && s3Client) {
-    try {
-      const s3Path = getS3FilePath(req.params.filename);
-      const command = new GetObjectCommand({
-        Bucket: AWS_S3_BUCKET!,
-        Key: s3Path,
-      });
-      const { Body, ContentType } = await s3Client.send(command);
-      
-      if (Body) {
-        const chunks: Buffer[] = [];
-        for await (const chunk of Body as any) {
-          chunks.push(Buffer.from(chunk));
-        }
-        const buffer = Buffer.concat(chunks);
-        res.setHeader("Content-Type", ContentType || 'application/octet-stream');
-        res.setHeader("Cache-Control", "public, max-age=86400");
-        return res.send(buffer);
-      }
-      return res.status(404).send("File not found");
-    } catch (err: any) {
-      if (err?.name === 'NoSuchKey') {
-        return res.status(404).send("File not found");
-      }
-      console.error("S3 storage read error:", err);
-      return res.status(500).send("Read error");
-    }
-  }
-
-  // 回退到本地文件系统
   try {
     const fileName = req.params.filename;
     const fullPath = path.join(UPLOADS_DIR, fileName);
@@ -803,17 +623,19 @@ app.all("/api/*", (req, res) => {
 });
 
 // Configure static serving and catch-all for non-API routes.
-// Also activated when Vite dev server failed to start (e.g. read-only FaaS fs).
-if (process.env.NODE_ENV === "production" || viteInitFailed) {
-  const distDir = path.join(process.cwd(), "dist");
-  app.use(express.static(distDir));
-  app.get("*", (req, res) => {
-    if (!req.url.startsWith('/api')) {
-      res.sendFile(path.join(distDir, "index.html"));
-    } else {
-      res.status(404).json({ error: "API route not found" });
-    }
-  });
+// Vercel handles static assets automatically via CDN.
+if (!process.env.VERCEL) {
+  if (process.env.NODE_ENV === "production" || viteInitFailed) {
+    const distDir = path.join(process.cwd(), "dist");
+    app.use(express.static(distDir));
+    app.get("*", (req, res) => {
+      if (!req.url.startsWith('/api')) {
+        res.sendFile(path.join(distDir, "index.html"));
+      } else {
+        res.status(404).json({ error: "API route not found" });
+      }
+    });
+  }
 }
 
 async function startServer(port: number = PORT, retries: number = 10) {
@@ -824,7 +646,7 @@ async function startServer(port: number = PORT, retries: number = 10) {
         : `http://localhost:${port}`;
       console.log(`🚀 Server running on ${serverUrl}`);
       console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`💾 Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : isS3Enabled ? 'AWS S3' : 'Local File System'}`);
+      console.log(`💾 Storage: Local File System`);
       console.log(`📂 Data Dir: ${DATA_DIR}`);
       resolve();
     });
@@ -842,10 +664,9 @@ async function startServer(port: number = PORT, retries: number = 10) {
   });
 }
 
-// Global error handlers for better Cloud Run logging
+// Global error handlers
 process.on('uncaughtException', (err) => {
   console.error('💥 Uncaught Exception:', err);
-  // Give it a moment to flush logs before exiting
   setTimeout(() => process.exit(1), 100);
 });
 
@@ -853,6 +674,9 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-startServer();
+// Do not map to a port if hosted on Vercel
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 export default app;
