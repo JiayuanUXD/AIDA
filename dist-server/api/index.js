@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import { TOS } from '@volcengine/tos-sdk';
+import { put, del, list } from '@vercel/blob';
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
 // Load base env first, then allow local overrides for developer machine secrets.
@@ -40,7 +40,7 @@ async function initVite() {
 }
 await initVite();
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-// Support absolute paths (e.g., /mnt/tos) for mounted storage
+// Support absolute paths for mounted storage
 const DATA_DIR = DATA_DIR_NAME.startsWith('/')
     ? DATA_DIR_NAME
     : path.join(process.cwd(), DATA_DIR_NAME);
@@ -57,32 +57,15 @@ const ALLOWED_PROXY_HOSTS = [
     "googleusercontent.com",
     "githubusercontent.com",
 ];
-// 火山引擎 TOS 配置
-const TOS_REGION = process.env.TOS_REGION;
-const TOS_ACCESS_KEY = process.env.TOS_ACCESS_KEY;
-const TOS_SECRET_KEY = process.env.TOS_SECRET_KEY;
-const TOS_BUCKET = process.env.TOS_BUCKET;
-const TOS_ENDPOINT = process.env.TOS_ENDPOINT;
-const isTOSEnabled = Boolean(TOS_REGION && TOS_ACCESS_KEY && TOS_SECRET_KEY && TOS_BUCKET && TOS_ENDPOINT);
-// 初始化 TOS 客户端
-let tosClient = null;
-if (isTOSEnabled) {
-    try {
-        tosClient = new TOS({
-            accessKeyId: TOS_ACCESS_KEY,
-            accessKeySecret: TOS_SECRET_KEY,
-            region: TOS_REGION,
-            endpoint: TOS_ENDPOINT,
-            bucket: TOS_BUCKET,
-        });
-        console.log('✅ Volcano Engine TOS client initialized');
-    }
-    catch (err) {
-        console.error('❌ Failed to initialize TOS client:', err);
-    }
+// Vercel Blob 配置
+const isBlobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+if (isBlobEnabled) {
+    console.log('✅ Vercel Blob storage enabled');
+} else {
+    console.warn('⚠️  BLOB_READ_WRITE_TOKEN not set, falling back to local file system');
 }
 // 统一的对象存储状态
-const isCloudStorageEnabled = isTOSEnabled;
+const isCloudStorageEnabled = isBlobEnabled;
 // 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
 try {
     if (!existsSync(DATA_DIR))
@@ -95,32 +78,30 @@ catch (err) {
 }
 // JSON DB Helpers
 const getDbPath = (collection) => path.join(DATA_DIR, `${collection}.json`);
-const getTOSDBPath = (collection) => `db/${collection}.json`;
-const getTOSFilePath = (fileName) => `uploads/${fileName}`;
+const getBlobDBPathname = (collection) => `db/${collection}.json`;
+const getBlobFilePath = (fileName) => `uploads/${fileName}`;
 const normalizeCollectionData = (data) => (Array.isArray(data) ? data : []);
 const readCollection = async (collection) => {
-    // 使用火山引擎 TOS
-    if (isTOSEnabled && tosClient) {
+    // 使用 Vercel Blob
+    if (isBlobEnabled) {
         try {
-            const tosPath = getTOSDBPath(collection);
-            const { data } = await tosClient.getObjectV2({
-                bucket: TOS_BUCKET,
-                key: tosPath,
-            });
-            const chunks = [];
-            for await (const chunk of data.content) {
-                chunks.push(Buffer.from(chunk));
+            const pathname = getBlobDBPathname(collection);
+            // list 确认文件是否存在
+            const { blobs } = await list({ prefix: pathname, limit: 1 });
+            if (blobs.length > 0) {
+                const response = await fetch(blobs[0].url);
+                if (response.ok) {
+                    const content = await response.text();
+                    if (content.trim()) {
+                        return normalizeCollectionData(JSON.parse(content));
+                    }
+                }
             }
-            const content = Buffer.concat(chunks).toString('utf-8');
-            if (content.trim()) {
-                return normalizeCollectionData(JSON.parse(content));
-            }
+            return [];
         }
         catch (err) {
-            // TOS returns 'NoSuchKey' status code 404
-            if (err?.statusCode !== 404) {
-                console.error(`Error reading TOS collection ${collection}:`, err);
-            }
+            console.error(`Error reading Blob collection ${collection}:`, err);
+            return [];
         }
     }
     // 回退到本地文件系统
@@ -146,17 +127,14 @@ const readCollection = async (collection) => {
     }
 };
 const writeCollection = async (collection, data) => {
-    // 使用火山引擎 TOS
-    if (isTOSEnabled && tosClient) {
-        const tosPath = getTOSDBPath(collection);
+    // 使用 Vercel Blob
+    if (isBlobEnabled) {
+        const pathname = getBlobDBPathname(collection);
         const content = JSON.stringify(data, null, 2);
-        await tosClient.putObject({
-            bucket: TOS_BUCKET,
-            key: tosPath,
-            body: Buffer.from(content, 'utf-8'),
-            headers: {
-                'Content-Type': 'application/json; charset=utf-8',
-            },
+        await put(pathname, content, {
+            access: 'public',
+            contentType: 'application/json; charset=utf-8',
+            allowOverwrite: true,
         });
         return;
     }
@@ -209,8 +187,8 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-    const dbProvider = isTOSEnabled ? "volc-tos" : "local";
-    const storageProvider = isTOSEnabled ? "volc-tos" : "local";
+    const dbProvider = isBlobEnabled ? "vercel-blob" : "local";
+    const storageProvider = isBlobEnabled ? "vercel-blob" : "local";
     res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: DATA_DIR });
 });
 // Error handler for body-parser errors
@@ -319,23 +297,20 @@ app.post("/api/storage/upload", async (req, res) => {
         contentType = match[1];
         body = Buffer.from(match[2], "base64");
     }
-    // Store uploads in Volcano Engine TOS
-    if (isTOSEnabled && tosClient) {
+    // 使用 Vercel Blob 存储文件
+    if (isBlobEnabled) {
         try {
-            const tosPath = getTOSFilePath(fileName);
-            await tosClient.putObject({
-                bucket: TOS_BUCKET,
-                key: tosPath,
-                body: typeof body === 'string' ? Buffer.from(body, 'utf-8') : body,
-                headers: {
-                    'Content-Type': contentType,
-                },
+            const pathname = getBlobFilePath(fileName);
+            const blob = await put(pathname, typeof body === 'string' ? Buffer.from(body, 'utf-8') : body, {
+                access: 'public',
+                contentType,
+                allowOverwrite: true,
             });
-            return res.json({ success: true, url: `/api/storage/file/${fileName}` });
+            return res.json({ success: true, url: blob.url });
         }
         catch (err) {
-            console.error("TOS storage upload error:", err);
-            return res.status(500).json({ error: err.message || "TOS storage upload failed" });
+            console.error("Blob storage upload error:", err);
+            return res.status(500).json({ error: err.message || "Blob storage upload failed" });
         }
     }
     // 回退到本地文件系统
@@ -344,32 +319,7 @@ app.post("/api/storage/upload", async (req, res) => {
     res.json({ success: true, url: `/api/storage/file/${fileName}` });
 });
 app.get("/api/storage/file/:filename", async (req, res) => {
-    // 从火山引擎 TOS 读取
-    if (isTOSEnabled && tosClient) {
-        try {
-            const tosPath = getTOSFilePath(req.params.filename);
-            const { data } = await tosClient.getObjectV2({
-                bucket: TOS_BUCKET,
-                key: tosPath,
-            });
-            const chunks = [];
-            for await (const chunk of data.content) {
-                chunks.push(Buffer.from(chunk));
-            }
-            const buffer = Buffer.concat(chunks);
-            const contentType = data.metadata?.['content-type'] || 'application/octet-stream';
-            res.setHeader("Content-Type", contentType);
-            res.setHeader("Cache-Control", "public, max-age=86400");
-            return res.send(buffer);
-        }
-        catch (err) {
-            if (err?.statusCode === 404) {
-                return res.status(404).send("File not found");
-            }
-            console.error("TOS storage read error:", err);
-            return res.status(500).send("Read error");
-        }
-    }
+    // 从 Vercel Blob 读取（文件 URL 直接由 Blob 提供，此端点仅作本地回退）
     // 回退到本地文件系统
     try {
         const fileName = req.params.filename;
@@ -657,7 +607,7 @@ async function startServer(port = PORT, retries = 10) {
                 : `http://localhost:${port}`;
             console.log(`🚀 Server running on ${serverUrl}`);
             console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-            console.log(`💾 Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : 'Local File System'}`);
+            console.log(`💾 Storage: ${isBlobEnabled ? 'Vercel Blob' : 'Local File System'}`);
             console.log(`📂 Data Dir: ${DATA_DIR}`);
             resolve();
         });
