@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"git.blame.editorDecoration.enabled": true,
+		"git.diagnosticsCommitHook.enabled": true,
+		"git.ignoreLimitWarning": true
+	}
+}
