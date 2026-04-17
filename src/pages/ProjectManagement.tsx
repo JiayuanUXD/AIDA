@@ -181,7 +181,6 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
 
     try {
       const projectId = Date.now().toString(36) + Math.random().toString(36).substr(2);
-      console.log('[v0] confirmCreateProject id:', projectId, 'name:', newProjectName);
 
       setShowCreateModal(false);
       await setDoc(doc('projects', projectId), {
@@ -192,10 +191,9 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
         category: 'All projects',
         members: []
       });
-      console.log('[v0] project created, navigating...');
       navigate(`/checker/${projectId}`);
     } catch (error) {
-      console.error('[v0] Error creating project:', error);
+      console.error("Error creating project:", error);
     }
   };
 
@@ -228,18 +226,16 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   };
 
   const handleCreateCategory = async () => {
-    console.log('[v0] handleCreateCategory called, categories.length:', categories.length);
     try {
       const docRef = await addDoc(collection('categories'), {
         name: 'New Category',
         createdAt: serverTimestamp(),
         order: categories.length
       });
-      console.log('[v0] category created, docRef:', docRef);
       setEditingCategoryId(docRef.id);
       setEditCategoryName('New Category');
     } catch (error) {
-      console.error('[v0] Error creating category:', error);
+      console.error("Error creating category:", error);
     }
   };
 

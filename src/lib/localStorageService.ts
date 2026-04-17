@@ -136,7 +136,6 @@ class RemoteDataService {
   async addDoc(collection: string, data: any): Promise<{ id: string }> {
     const id = Date.now().toString(36) + Math.random().toString(36).substr(2);
     const newDoc = { id, ...data };
-    console.log(`[v0] addDoc ${collection}`, newDoc.id);
     await this.mutateCollection(
       collection,
       (current) => [...current, newDoc],
@@ -146,11 +145,8 @@ class RemoteDataService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(newDoc)
         });
-        console.log(`[v0] addDoc ${collection} response:`, response.status, response.ok);
         if (!response.ok) {
-          const errText = await response.text();
-          console.error(`[v0] addDoc error body:`, errText);
-          throw new Error(`Failed to add document to ${collection}: ${response.status} ${errText}`);
+          throw new Error(`Failed to add document to ${collection}`);
         }
       }
     );
@@ -174,7 +170,6 @@ class RemoteDataService {
 
   // 更新文档
   async updateDoc(collection: string, id: string, data: any): Promise<void> {
-    console.log(`[v0] updateDoc ${collection}/${id}`);
     await this.mutateCollection(
       collection,
       (current) => {
@@ -193,11 +188,8 @@ class RemoteDataService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(data)
         });
-        console.log(`[v0] updateDoc ${collection}/${id} response:`, response.status, response.ok);
         if (!response.ok) {
-          const errText = await response.text();
-          console.error(`[v0] updateDoc error body:`, errText);
-          throw new Error(`Failed to update document ${id} in ${collection}: ${response.status} ${errText}`);
+          throw new Error(`Failed to update document ${id} in ${collection}`);
         }
       }
     );

@@ -377,14 +377,11 @@ app.get("/api/db/:collection/:id", async (req, res) => {
 
 app.post("/api/db/:collection", async (req, res) => {
   const { collection } = req.params;
-  console.log(`[v0] POST /api/db/${collection} body:`, JSON.stringify(req.body).substring(0, 100));
   if (!isAllowedCollection(collection)) {
-    console.log(`[v0] POST rejected - not allowed: ${collection}`);
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
   try {
     const data = await readCollection(collection);
-    console.log(`[v0] POST ${collection} current length:`, data.length);
     const newDoc = {
       ...req.body,
       createdAt: Date.now(),
@@ -392,19 +389,16 @@ app.post("/api/db/:collection", async (req, res) => {
     };
     data.push(newDoc);
     await writeCollection(collection, data);
-    console.log(`[v0] POST ${collection} success, new id:`, newDoc.id);
     res.json(newDoc);
   } catch (err: any) {
-    console.error(`[v0] POST /api/db/${collection} Error:`, err);
+    console.error(`[POST /api/db/${collection}] Error:`, err);
     res.status(500).json({ error: err.message || 'Failed to save data' });
   }
 });
 
 app.put("/api/db/:collection/:id", async (req, res) => {
   const { collection } = req.params;
-  console.log(`[v0] PUT /api/db/${collection}/${req.params.id}`);
   if (!isAllowedCollection(collection)) {
-    console.log(`[v0] PUT rejected - not allowed: ${collection}`);
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
   try {
