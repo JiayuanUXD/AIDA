@@ -119,12 +119,22 @@ if (isS3Enabled) {
 const isCloudStorageEnabled = isTOSEnabled || isS3Enabled;
 
 // 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
+let isLocalFsWritable = false;
 try {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
+  // 检测是否可写
+  const testPath = path.join(DATA_DIR, '.write_test');
+  await fs.writeFile(testPath, 'ok', 'utf-8');
+  await fs.unlink(testPath);
+  isLocalFsWritable = true;
+  console.log('[server] Local file system is writable, using local storage.');
 } catch (err) {
-  console.warn('[server] Cannot create local data directories (read-only fs?). Cloud storage will be used:', (err as Error).message);
+  console.warn('[server] Cannot write to local data directories (read-only fs?). Using in-memory fallback:', (err as Error).message);
 }
+
+// 内存存储（只读文件系统的 fallback）
+const inMemoryDB = new Map<string, any[]>();
 
 // JSON DB Helpers
 const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
@@ -189,23 +199,28 @@ const readCollection = async (collection: string) => {
   }
 
   // 回退到本地文件系统
-  try {
-    const filePath = getDbPath(collection);
-    if (!existsSync(filePath)) return [];
-    const content = await fs.readFile(filePath, "utf-8");
-    return JSON.parse(content);
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        const retryPath = getDbPath(collection);
-        const retryContent = await fs.readFile(retryPath, "utf-8");
-        return JSON.parse(retryContent);
-      } catch {}
+  if (isLocalFsWritable) {
+    try {
+      const filePath = getDbPath(collection);
+      if (!existsSync(filePath)) return [];
+      const content = await fs.readFile(filePath, "utf-8");
+      return JSON.parse(content);
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          const retryPath = getDbPath(collection);
+          const retryContent = await fs.readFile(retryPath, "utf-8");
+          return JSON.parse(retryContent);
+        } catch {}
+      }
+      console.error(`Error reading collection ${collection}:`, err);
+      return [];
     }
-    console.error(`Error reading collection ${collection}:`, err);
-    return [];
   }
+
+  // 内存 fallback（只读文件系统）
+  return inMemoryDB.get(collection) ?? [];
 };
 
 const writeCollection = async (collection: string, data: any[]) => {
@@ -239,10 +254,16 @@ const writeCollection = async (collection: string, data: any[]) => {
   }
 
   // 回退到本地文件系统
-  const filePath = getDbPath(collection);
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
-  await fs.rename(tempPath, filePath);
+  if (isLocalFsWritable) {
+    const filePath = getDbPath(collection);
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
+    await fs.rename(tempPath, filePath);
+    return;
+  }
+
+  // 内存 fallback（只读文件系统）
+  inMemoryDB.set(collection, data);
 };
 
 const isPrivateOrLocalHostname = (hostname: string) => {
