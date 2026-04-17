@@ -132,6 +132,20 @@ class RemoteDataService {
     }
   }
 
+  private async buildHttpError(response: Response, fallbackMessage: string): Promise<Error> {
+    try {
+      const text = await response.text();
+      if (text) {
+        try {
+          const json = JSON.parse(text);
+          if (json?.error) return new Error(String(json.error));
+        } catch {}
+        return new Error(text);
+      }
+    } catch {}
+    return new Error(fallbackMessage);
+  }
+
   // 添加文档
   async addDoc(collection: string, data: any): Promise<{ id: string }> {
     const id = Date.now().toString(36) + Math.random().toString(36).substr(2);
@@ -147,7 +161,7 @@ class RemoteDataService {
         });
 
         if (!response.ok) {
-          throw new Error(`Failed to add document to ${collection}`);
+          throw await this.buildHttpError(response, `Failed to add document to ${collection}`);
         }
       }
     );
@@ -191,7 +205,7 @@ class RemoteDataService {
         });
 
         if (!response.ok) {
-          throw new Error(`Failed to update document ${id} in ${collection}`);
+          throw await this.buildHttpError(response, `Failed to update document ${id} in ${collection}`);
         }
       }
     );
@@ -214,7 +228,7 @@ class RemoteDataService {
         });
 
         if (!response.ok) {
-          throw new Error(`Failed to delete document ${id} in ${collection}`);
+          throw await this.buildHttpError(response, `Failed to delete document ${id} in ${collection}`);
         }
       }
     );

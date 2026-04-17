@@ -65,15 +65,21 @@ const ALLOWED_PROXY_HOSTS = [
   "githubusercontent.com",
 ];
 
-// 统一的对象存储状态
-const isCloudStorageEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+// Vercel deployment should use Vercel Blob instead of filesystem writes.
+const isVercelRuntime = Boolean(process.env.VERCEL);
+const hasBlobToken = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+const isCloudStorageEnabled = hasBlobToken;
 
-// 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
+// Ensure local data directories for non-Vercel / local development.
 try {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
   if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
 } catch (err) {
-  console.warn('[server] Cannot create local data directories (read-only fs?). Cloud storage will be used:', (err as Error).message);
+  console.warn('[server] Cannot create local data directories (read-only fs?):', (err as Error).message);
+}
+
+if (isVercelRuntime && !hasBlobToken) {
+  throw new Error("BLOB_READ_WRITE_TOKEN is required on Vercel. Configure it in Project Settings > Environment Variables.");
 }
 
 // JSON DB Helpers
@@ -128,11 +134,15 @@ const writeCollection = async (collection: string, data: any[]) => {
         allowOverwrite: true,
         contentType: 'application/json; charset=utf-8'
       });
-      return;
     } catch (err) {
       console.error(`Error writing to Vercel Blob collection ${collection}:`, err);
       throw err;
     }
+    return;
+  }
+
+  if (isVercelRuntime) {
+    throw new Error("Filesystem persistence is disabled on Vercel. Configure BLOB_READ_WRITE_TOKEN.");
   }
 
   const filePath = getDbPath(collection);
@@ -180,9 +190,11 @@ app.get("/api/health", (req, res) => {
   res.json({ 
     status: "ok", 
     env: process.env.NODE_ENV, 
+    runtime: isVercelRuntime ? "vercel" : "node",
+    blobConfigured: hasBlobToken,
     dbProvider: isCloudStorageEnabled ? 'vercel-blob' : 'local', 
     storageProvider: isCloudStorageEnabled ? 'vercel-blob' : 'local', 
-    dataDir: DATA_DIR 
+    dataDir: DATA_DIR
   });
 });
 

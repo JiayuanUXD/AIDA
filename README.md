@@ -10,6 +10,12 @@ npm run dev
 
 在 `.env.local` 中配置 `GEMINI_API_KEY` 和云存储相关的环境变量（火山引擎 TOS 或 AWS S3）。
 
+最小本地环境变量示例：
+
+```env
+GEMINI_API_KEY=your-gemini-api-key
+```
+
 ## 同时启动 3000 / 3001
 
 ```bash
@@ -29,47 +35,52 @@ npm run start
 
 ## 云部署
 
-### 火山引擎部署
+### Vercel 部署（当前唯一支持）
 
-1. **配置环境变量**：
-   - `TOS_REGION`：TOS 区域
-   - `TOS_ACCESS_KEY`：TOS 访问密钥
-   - `TOS_SECRET_KEY`：TOS 密钥
-   - `TOS_BUCKET`：TOS 存储桶名称
-   - `TOS_ENDPOINT`：TOS 端点
+1. 在 Vercel 导入本仓库。
+2. 在 Project Settings -> Environment Variables 配置：
+   - `BLOB_READ_WRITE_TOKEN`（必须，数据持久化）
+   - `ARK_API_KEY`（如果使用 UI 分析）
+   - `DOUBAO_MODEL_ID`（如果使用 UI 分析）
+   - `FIGMA_ACCESS_TOKEN`（如果使用 Figma 拉取）
+3. 触发部署。
 
-2. **部署步骤**：
-   - 创建 ECS 实例
-   - 安装 Node.js 18+
-   - 克隆代码仓库
-   - 安装依赖
-   - 配置环境变量
-   - 构建并启动服务
+#### 健康检查
 
-### AWS 部署
+部署后访问：
 
-1. **配置环境变量**：
-   - `AWS_REGION`：AWS 区域
-   - `AWS_ACCESS_KEY_ID`：AWS 访问密钥 ID
-   - `AWS_SECRET_ACCESS_KEY`：AWS 访问密钥
-   - `AWS_S3_BUCKET`：S3 存储桶名称
+```text
+https://<your-domain>/api/health
+```
 
-2. **部署步骤**：
-   - 创建 EC2 实例
-   - 安装 Node.js 18+
-   - 克隆代码仓库
-   - 安装依赖
-   - 配置环境变量
-   - 构建并启动服务
-   - 配置 S3 存储桶权限
+预期返回字段：
+- `status: "ok"`
+- `runtime: "vercel"`
+- `blobConfigured: true`
+- `dbProvider: "vercel-blob"`
 
-3. **AWS 服务推荐**：
-   - **EC2**：适合完整控制的场景
-   - **ECS**：容器化部署
-   - **Elastic Beanstalk**：全托管服务
-   - **Lambda + API Gateway**：无服务器架构
+如果 `blobConfigured` 为 `false`，`/api/db/*` 写入会失败。
+
+#### 常见问题
+
+- `/api/health` 返回 404：
+  - 确认 API 入口文件为 `api/[...path].ts`（不是 `[[...path]].ts`）。
+- 可以读不能写：
+  - 基本是 `BLOB_READ_WRITE_TOKEN` 未配置或配置到错误的环境（只配了 Preview 没配 Production）。
 
 ## 版本记录
+
+### 2026-04-17（Vercel 稳定性修复）
+
+- 路由修复：
+  - API catch-all 入口改为 `api/[...path].ts`，修复 `*/api/health` 在 Vercel 上 404。
+- 存储策略收敛到 Vercel：
+  - Vercel 运行时强制要求 `BLOB_READ_WRITE_TOKEN`，缺失时启动即报错（fail fast）。
+  - 禁止在 Vercel 上静默回退本地文件系统写入，避免“看似成功但无法持久化”。
+- 健康检查增强：
+  - `/api/health` 新增 `runtime`、`blobConfigured` 字段，快速定位配置问题。
+- 可观测性优化：
+  - 前端创建项目/分类等失败场景增加 toast 错误提示，直接显示后端错误原因。
 
 ### 2026-04-16（AWS 支持版本）
 

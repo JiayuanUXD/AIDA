@@ -3,7 +3,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import { put, del, list } from '@vercel/blob';
+import { put, list } from "@vercel/blob";
 import fs from "fs/promises";
 import { existsSync, mkdirSync } from "fs";
 // Load base env first, then allow local overrides for developer machine secrets.
@@ -40,7 +40,7 @@ async function initVite() {
 }
 await initVite();
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-// Support absolute paths for mounted storage
+// Support absolute paths (e.g., /mnt/tos) for mounted storage
 const DATA_DIR = DATA_DIR_NAME.startsWith('/')
     ? DATA_DIR_NAME
     : path.join(process.cwd(), DATA_DIR_NAME);
@@ -57,16 +57,11 @@ const ALLOWED_PROXY_HOSTS = [
     "googleusercontent.com",
     "githubusercontent.com",
 ];
-// Vercel Blob 配置
-const isBlobEnabled = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
-if (isBlobEnabled) {
-    console.log('✅ Vercel Blob storage enabled');
-} else {
-    console.warn('⚠️  BLOB_READ_WRITE_TOKEN not set, falling back to local file system');
-}
-// 统一的对象存储状态
-const isCloudStorageEnabled = isBlobEnabled;
-// 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
+// Vercel deployment should use Vercel Blob instead of filesystem writes.
+const isVercelRuntime = Boolean(process.env.VERCEL);
+const hasBlobToken = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+const isCloudStorageEnabled = hasBlobToken;
+// Ensure local data directories for non-Vercel / local development.
 try {
     if (!existsSync(DATA_DIR))
         mkdirSync(DATA_DIR, { recursive: true });
@@ -74,22 +69,21 @@ try {
         mkdirSync(UPLOADS_DIR, { recursive: true });
 }
 catch (err) {
-    console.warn('[server] Cannot create local data directories (read-only fs?). Cloud storage will be used:', err.message);
+    console.warn('[server] Cannot create local data directories (read-only fs?):', err.message);
+}
+if (isVercelRuntime && !hasBlobToken) {
+    throw new Error("BLOB_READ_WRITE_TOKEN is required on Vercel. Configure it in Project Settings > Environment Variables.");
 }
 // JSON DB Helpers
 const getDbPath = (collection) => path.join(DATA_DIR, `${collection}.json`);
-const getBlobDBPathname = (collection) => `db/${collection}.json`;
-const getBlobFilePath = (fileName) => `uploads/${fileName}`;
 const normalizeCollectionData = (data) => (Array.isArray(data) ? data : []);
 const readCollection = async (collection) => {
-    // 使用 Vercel Blob
-    if (isBlobEnabled) {
+    if (isCloudStorageEnabled) {
         try {
-            const pathname = getBlobDBPathname(collection);
-            // list 确认文件是否存在
-            const { blobs } = await list({ prefix: pathname, limit: 1 });
-            if (blobs.length > 0) {
-                const response = await fetch(blobs[0].url);
+            const { blobs } = await list({ prefix: `db/${collection}.json` });
+            const exactMatch = blobs.find((b) => b.pathname === `db/${collection}.json`);
+            if (exactMatch) {
+                const response = await fetch(exactMatch.url);
                 if (response.ok) {
                     const content = await response.text();
                     if (content.trim()) {
@@ -97,14 +91,11 @@ const readCollection = async (collection) => {
                     }
                 }
             }
-            return [];
         }
         catch (err) {
-            console.error(`Error reading Blob collection ${collection}:`, err);
-            return [];
+            console.error(`Error reading Vercel Blob collection ${collection}:`, err);
         }
     }
-    // 回退到本地文件系统
     try {
         const filePath = getDbPath(collection);
         if (!existsSync(filePath))
@@ -127,18 +118,17 @@ const readCollection = async (collection) => {
     }
 };
 const writeCollection = async (collection, data) => {
-    // 使用 Vercel Blob
-    if (isBlobEnabled) {
-        const pathname = getBlobDBPathname(collection);
-        const content = JSON.stringify(data, null, 2);
-        await put(pathname, content, {
+    if (isCloudStorageEnabled) {
+        await put(`db/${collection}.json`, JSON.stringify(data, null, 2), {
             access: 'public',
-            contentType: 'application/json; charset=utf-8',
-            allowOverwrite: true,
+            addRandomSuffix: false,
+            contentType: 'application/json; charset=utf-8'
         });
         return;
     }
-    // 回退到本地文件系统
+    if (isVercelRuntime) {
+        throw new Error("Filesystem persistence is disabled on Vercel. Configure BLOB_READ_WRITE_TOKEN.");
+    }
     const filePath = getDbPath(collection);
     const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf-8");
@@ -187,9 +177,15 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 // Health check
 app.get("/api/health", (req, res) => {
-    const dbProvider = isBlobEnabled ? "vercel-blob" : "local";
-    const storageProvider = isBlobEnabled ? "vercel-blob" : "local";
-    res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: DATA_DIR });
+    res.json({
+        status: "ok",
+        env: process.env.NODE_ENV,
+        runtime: isVercelRuntime ? "vercel" : "node",
+        blobConfigured: hasBlobToken,
+        dbProvider: isCloudStorageEnabled ? 'vercel-blob' : 'local',
+        storageProvider: isCloudStorageEnabled ? 'vercel-blob' : 'local',
+        dataDir: DATA_DIR
+    });
 });
 // Error handler for body-parser errors
 app.use((err, req, res, next) => {
@@ -297,30 +293,37 @@ app.post("/api/storage/upload", async (req, res) => {
         contentType = match[1];
         body = Buffer.from(match[2], "base64");
     }
-    // 使用 Vercel Blob 存储文件
-    if (isBlobEnabled) {
+    if (isCloudStorageEnabled) {
         try {
-            const pathname = getBlobFilePath(fileName);
-            const blob = await put(pathname, typeof body === 'string' ? Buffer.from(body, 'utf-8') : body, {
+            await put(`uploads/${fileName}`, typeof body === 'string' ? Buffer.from(body, 'utf-8') : body, {
                 access: 'public',
-                contentType,
-                allowOverwrite: true,
+                addRandomSuffix: false,
+                contentType: contentType
             });
-            return res.json({ success: true, url: blob.url });
+            return res.json({ success: true, url: `/api/storage/file/${fileName}` });
         }
         catch (err) {
-            console.error("Blob storage upload error:", err);
-            return res.status(500).json({ error: err.message || "Blob storage upload failed" });
+            console.error("Vercel Blob upload error:", err);
+            return res.status(500).json({ error: err.message || "Vercel Blob upload failed" });
         }
     }
-    // 回退到本地文件系统
     const fullPath = path.join(UPLOADS_DIR, fileName);
     await fs.writeFile(fullPath, typeof body === 'string' ? body : data, "utf-8");
     res.json({ success: true, url: `/api/storage/file/${fileName}` });
 });
 app.get("/api/storage/file/:filename", async (req, res) => {
-    // 从 Vercel Blob 读取（文件 URL 直接由 Blob 提供，此端点仅作本地回退）
-    // 回退到本地文件系统
+    if (isCloudStorageEnabled) {
+        try {
+            const { blobs } = await list({ prefix: `uploads/${req.params.filename}` });
+            const exactMatch = blobs.find((b) => b.pathname === `uploads/${req.params.filename}`);
+            if (exactMatch) {
+                return res.redirect(302, exactMatch.url);
+            }
+        }
+        catch (err) {
+            console.error("Vercel Blob read error:", err);
+        }
+    }
     try {
         const fileName = req.params.filename;
         const fullPath = path.join(UPLOADS_DIR, fileName);
@@ -586,18 +589,20 @@ app.all("/api/*", (req, res) => {
     });
 });
 // Configure static serving and catch-all for non-API routes.
-// Also activated when Vite dev server failed to start (e.g. read-only FaaS fs).
-if (process.env.NODE_ENV === "production" || viteInitFailed) {
-    const distDir = path.join(process.cwd(), "dist");
-    app.use(express.static(distDir));
-    app.get("*", (req, res) => {
-        if (!req.url.startsWith('/api')) {
-            res.sendFile(path.join(distDir, "index.html"));
-        }
-        else {
-            res.status(404).json({ error: "API route not found" });
-        }
-    });
+// Vercel handles static assets automatically via CDN.
+if (!process.env.VERCEL) {
+    if (process.env.NODE_ENV === "production" || viteInitFailed) {
+        const distDir = path.join(process.cwd(), "dist");
+        app.use(express.static(distDir));
+        app.get("*", (req, res) => {
+            if (!req.url.startsWith('/api')) {
+                res.sendFile(path.join(distDir, "index.html"));
+            }
+            else {
+                res.status(404).json({ error: "API route not found" });
+            }
+        });
+    }
 }
 async function startServer(port = PORT, retries = 10) {
     return new Promise((resolve, reject) => {
@@ -607,7 +612,7 @@ async function startServer(port = PORT, retries = 10) {
                 : `http://localhost:${port}`;
             console.log(`🚀 Server running on ${serverUrl}`);
             console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-            console.log(`💾 Storage: ${isBlobEnabled ? 'Vercel Blob' : 'Local File System'}`);
+            console.log(`💾 Storage: Local File System`);
             console.log(`📂 Data Dir: ${DATA_DIR}`);
             resolve();
         });
@@ -624,14 +629,16 @@ async function startServer(port = PORT, retries = 10) {
         });
     });
 }
-// Global error handlers for better Cloud Run logging
+// Global error handlers
 process.on('uncaughtException', (err) => {
     console.error('💥 Uncaught Exception:', err);
-    // Give it a moment to flush logs before exiting
     setTimeout(() => process.exit(1), 100);
 });
 process.on('unhandledRejection', (reason, promise) => {
     console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
 });
-startServer();
+// Do not map to a port if hosted on Vercel
+if (!process.env.VERCEL) {
+    startServer();
+}
 export default app;

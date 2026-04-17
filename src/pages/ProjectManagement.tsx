@@ -194,6 +194,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       navigate(`/checker/${projectId}`);
     } catch (error) {
       console.error("Error creating project:", error);
+      addToast(`Failed to create project: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -211,6 +212,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       await updateDoc(doc('projects', idToTrash), { category: 'Trash' });
     } catch (error) {
       console.error("Error moving project to trash:", error);
+      addToast(`Failed to move project to trash: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -222,6 +224,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       });
     } catch (error) {
       console.error("Error starring project:", error);
+      addToast(`Failed to update star status: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -236,6 +239,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       setEditCategoryName('New Category');
     } catch (error) {
       console.error("Error creating category:", error);
+      addToast(`Failed to create category: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -264,6 +268,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       setEditingCategoryId(null);
     } catch (error) {
       console.error("Error saving category:", error);
+      addToast(`Failed to save category: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
@@ -304,7 +309,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
         category: hoveredCategoryId
       }).catch(error => {
         console.error("Error updating project category:", error);
-        addToast("Failed to move project");
+        addToast(`Failed to move project: ${error instanceof Error ? error.message : 'Unknown error'}`);
       });
     }
     setDraggedProjectId(null);
