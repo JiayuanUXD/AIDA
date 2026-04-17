@@ -120,17 +120,22 @@ const isCloudStorageEnabled = isTOSEnabled || isS3Enabled;
 
 // 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
 let isLocalFsWritable = false;
+console.log('[v0] Starting up. DATA_DIR:', DATA_DIR);
 try {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  if (!existsSync(DATA_DIR)) {
+    console.log('[v0] Creating DATA_DIR...');
+    mkdirSync(DATA_DIR, { recursive: true });
+  }
   if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
   // 检测是否可写
   const testPath = path.join(DATA_DIR, '.write_test');
+  console.log('[v0] Testing write to:', testPath);
   await fs.writeFile(testPath, 'ok', 'utf-8');
   await fs.unlink(testPath);
   isLocalFsWritable = true;
-  console.log('[server] Local file system is writable, using local storage.');
+  console.log('[v0] Local file system is writable.');
 } catch (err) {
-  console.warn('[server] Cannot write to local data directories (read-only fs?). Using in-memory fallback:', (err as Error).message);
+  console.warn('[v0] FS not writable, using in-memory fallback:', (err as Error).message);
 }
 
 // 内存存储（只读文件系统的 fallback）
@@ -352,11 +357,14 @@ app.get("/api/db/:collection/:id", async (req, res) => {
 
 app.post("/api/db/:collection", async (req, res) => {
   const { collection } = req.params;
+  console.log(`[v0] POST /api/db/${collection} body:`, JSON.stringify(req.body).substring(0, 100));
   if (!isAllowedCollection(collection)) {
+    console.log(`[v0] POST rejected - not allowed: ${collection}`);
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
   try {
     const data = await readCollection(collection);
+    console.log(`[v0] POST ${collection} current length:`, data.length);
     const newDoc = {
       ...req.body,
       createdAt: Date.now(),
@@ -364,16 +372,19 @@ app.post("/api/db/:collection", async (req, res) => {
     };
     data.push(newDoc);
     await writeCollection(collection, data);
+    console.log(`[v0] POST ${collection} success, new id:`, newDoc.id);
     res.json(newDoc);
   } catch (err: any) {
-    console.error(`[POST /api/db/${collection}] Error:`, err);
+    console.error(`[v0] POST /api/db/${collection} Error:`, err);
     res.status(500).json({ error: err.message || 'Failed to save data' });
   }
 });
 
 app.put("/api/db/:collection/:id", async (req, res) => {
   const { collection } = req.params;
+  console.log(`[v0] PUT /api/db/${collection}/${req.params.id}`);
   if (!isAllowedCollection(collection)) {
+    console.log(`[v0] PUT rejected - not allowed: ${collection}`);
     return res.status(403).json({ error: `Collection "${collection}" is not allowed` });
   }
   try {
@@ -845,7 +856,7 @@ async function startServer(port: number = PORT, retries: number = 10) {
         : `http://localhost:${port}`;
       console.log(`🚀 Server running on ${serverUrl}`);
       console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`💾 Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : isS3Enabled ? 'AWS S3' : 'Local File System'}`);
+      console.log(`��� Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : isS3Enabled ? 'AWS S3' : 'Local File System'}`);
       console.log(`📂 Data Dir: ${DATA_DIR}`);
       resolve();
     });
