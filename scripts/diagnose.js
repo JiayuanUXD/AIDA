@@ -3,35 +3,43 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// 模拟 api/index.ts 的 __dirname 行为（api/__dirname = scripts/../api）
+const apiDir = path.join(__dirname, '..', 'api');
 const ROOT = path.resolve(__dirname, '..');
-const DATA_DIR = path.join(ROOT, 'data');
+const DATA_DIR = path.join(apiDir, '..', 'data');  // __dirname/../data = projectRoot/data
+const TMP_DATA_DIR = '/tmp/aida-data';
 
 console.log('=== AIDA 诊断报告 ===');
+console.log('scripts __dirname:', __dirname);
+console.log('api dir (模拟):', apiDir);
 console.log('ROOT:', ROOT);
-console.log('DATA_DIR:', DATA_DIR);
+console.log('DATA_DIR (首选):', DATA_DIR);
+console.log('TMP_DATA_DIR:', TMP_DATA_DIR);
 
 // 1. 检查 data 目录
 console.log('\n--- 文件系统检查 ---');
-console.log('data 目录存在:', fs.existsSync(DATA_DIR));
 
-// 尝试创建
-try {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  console.log('mkdirSync 成功');
-} catch (e) {
-  console.log('mkdirSync 失败:', e.message);
+function testDir(dir, label) {
+  console.log(`\n[${label}] 路径: ${dir}`);
+  console.log(`[${label}] 目录存在:`, fs.existsSync(dir));
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`[${label}] mkdirSync: 成功`);
+  } catch (e) {
+    console.log(`[${label}] mkdirSync: 失败 - ${e.code} ${e.message}`);
+  }
+  const testPath = path.join(dir, '.test_write');
+  try {
+    fs.writeFileSync(testPath, 'test', 'utf-8');
+    fs.unlinkSync(testPath);
+    console.log(`[${label}] 写入测试: 成功`);
+  } catch (e) {
+    console.log(`[${label}] 写入测试: 失败 - ${e.code} ${e.message}`);
+  }
 }
 
-// 尝试写入
-const testPath = path.join(DATA_DIR, '.test_write');
-try {
-  fs.writeFileSync(testPath, 'test', 'utf-8');
-  console.log('writeFileSync 成功');
-  fs.unlinkSync(testPath);
-  console.log('unlinkSync 成功');
-} catch (e) {
-  console.log('writeFileSync 失败:', e.code, e.message);
-}
+testDir(DATA_DIR, '首选目录');
+testDir(TMP_DATA_DIR, '/tmp fallback');
 
 // 2. 检查现有 JSON 文件
 console.log('\n--- 数据文件检查 ---');

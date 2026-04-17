@@ -48,10 +48,14 @@ async function initVite() {
 await initVite();
 
 const DATA_DIR_NAME = process.env.DATA_DIR_NAME || "data";
-// Support absolute paths (e.g., /mnt/tos) for mounted storage
-const DATA_DIR = DATA_DIR_NAME.startsWith('/') 
-  ? DATA_DIR_NAME 
-  : path.join(process.cwd(), DATA_DIR_NAME);
+// Resolve data dir: support absolute paths first, then try relative to __dirname,
+// and fall back to /tmp/aida-data if the preferred path is not writable.
+function resolveDataDir(): string {
+  if (DATA_DIR_NAME.startsWith('/')) return DATA_DIR_NAME;
+  // __dirname = .../api/, so .. = project root
+  return path.join(__dirname, '..', DATA_DIR_NAME);
+}
+const DATA_DIR = resolveDataDir();
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const ALLOWED_COLLECTIONS = new Set(["projects", "categories", "analysisResults", "rounds"]);
 const PROJECT_ROUNDS_COLLECTION_REGEX = /^projects_[a-zA-Z0-9_-]+_rounds$/;
@@ -118,31 +122,47 @@ if (isS3Enabled) {
 // 统一的对象存储状态
 const isCloudStorageEnabled = isTOSEnabled || isS3Enabled;
 
-// 确保数据目录存在（FaaS 环境可能是只读文件系统，需要容错）
-let isLocalFsWritable = false;
-console.log('[v0] Starting up. DATA_DIR:', DATA_DIR);
-try {
-  if (!existsSync(DATA_DIR)) {
-    console.log('[v0] Creating DATA_DIR...');
-    mkdirSync(DATA_DIR, { recursive: true });
-  }
-  if (!existsSync(UPLOADS_DIR)) mkdirSync(UPLOADS_DIR, { recursive: true });
-  // 检测是否可写
-  const testPath = path.join(DATA_DIR, '.write_test');
-  console.log('[v0] Testing write to:', testPath);
-  await fs.writeFile(testPath, 'ok', 'utf-8');
-  await fs.unlink(testPath);
-  isLocalFsWritable = true;
-  console.log('[v0] Local file system is writable.');
-} catch (err) {
-  console.warn('[v0] FS not writable, using in-memory fallback:', (err as Error).message);
-}
-
-// 内存存储（只读文件系统的 fallback）
+// 内存存储（文件系统不可写时的 fallback）
 const inMemoryDB = new Map<string, any[]>();
 
+// 确保数据目录存在并可写，不可写时自动降级到 /tmp 或内存
+async function tryMakeWritableDir(dir: string): Promise<boolean> {
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const testPath = path.join(dir, '.write_test');
+    await fs.writeFile(testPath, 'ok', 'utf-8');
+    await fs.unlink(testPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+let activeDataDir = DATA_DIR;
+let activeUploadsDir = UPLOADS_DIR;
+let isLocalFsWritable = await tryMakeWritableDir(DATA_DIR);
+
+if (!isLocalFsWritable) {
+  // 尝试 /tmp 目录
+  const tmpDataDir = '/tmp/aida-data';
+  const tmpUploadsDir = '/tmp/aida-data/uploads';
+  isLocalFsWritable = await tryMakeWritableDir(tmpDataDir);
+  if (isLocalFsWritable) {
+    activeDataDir = tmpDataDir;
+    activeUploadsDir = tmpUploadsDir;
+    await tryMakeWritableDir(tmpUploadsDir);
+    console.log('[server] Using /tmp/aida-data for storage (primary path not writable)');
+  } else {
+    console.warn('[server] No writable filesystem found, using in-memory storage (data will not persist across restarts)');
+  }
+} else {
+  // 确保 uploads 子目录存在
+  if (!existsSync(activeUploadsDir)) mkdirSync(activeUploadsDir, { recursive: true });
+  console.log('[server] Using local filesystem storage at:', activeDataDir);
+}
+
 // JSON DB Helpers
-const getDbPath = (collection: string) => path.join(DATA_DIR, `${collection}.json`);
+const getDbPath = (collection: string) => path.join(activeDataDir, `${collection}.json`);
 const getTOSDBPath = (collection: string) => `db/${collection}.json`;
 const getS3DBPath = (collection: string) => `db/${collection}.json`;
 const getTOSFilePath = (fileName: string) => `uploads/${fileName}`;
@@ -318,7 +338,7 @@ app.get("/api/health", (req, res) => {
     storageProvider = "aws-s3";
   }
   
-  res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: DATA_DIR });
+  res.json({ status: "ok", env: process.env.NODE_ENV, dbProvider, storageProvider, dataDir: activeDataDir });
 });
 
 // Error handler for body-parser errors
@@ -476,7 +496,7 @@ app.post("/api/storage/upload", async (req, res) => {
   }
 
   // 回退到本地文件系统
-  const fullPath = path.join(UPLOADS_DIR, fileName);
+  const fullPath = path.join(activeUploadsDir, fileName);
   await fs.writeFile(fullPath, typeof body === 'string' ? body : data, "utf-8");
   res.json({ success: true, url: `/api/storage/file/${fileName}` });
 });
@@ -541,7 +561,7 @@ app.get("/api/storage/file/:filename", async (req, res) => {
   // 回退到本地文件系统
   try {
     const fileName = req.params.filename;
-    const fullPath = path.join(UPLOADS_DIR, fileName);
+    const fullPath = path.join(activeUploadsDir, fileName);
     if (!existsSync(fullPath)) return res.status(404).send("File not found");
     
     // Read the stored content (which is a Data URL string)
@@ -837,7 +857,8 @@ app.all("/api/*", (req, res) => {
 // Configure static serving and catch-all for non-API routes.
 // Also activated when Vite dev server failed to start (e.g. read-only FaaS fs).
 if (process.env.NODE_ENV === "production" || viteInitFailed) {
-  const distDir = path.join(process.cwd(), "dist");
+  // __dirname = .../api/, so dist/ is at project root
+  const distDir = path.join(__dirname, '..', 'dist');
   app.use(express.static(distDir));
   app.get("*", (req, res) => {
     if (!req.url.startsWith('/api')) {
@@ -857,7 +878,7 @@ async function startServer(port: number = PORT, retries: number = 10) {
       console.log(`🚀 Server running on ${serverUrl}`);
       console.log(`📦 Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`��� Storage: ${isTOSEnabled ? 'Volcano Engine TOS' : isS3Enabled ? 'AWS S3' : 'Local File System'}`);
-      console.log(`📂 Data Dir: ${DATA_DIR}`);
+      console.log(`📂 Data Dir: ${activeDataDir} (writable: ${isLocalFsWritable})`);
       resolve();
     });
 
