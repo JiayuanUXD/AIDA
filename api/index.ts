@@ -125,11 +125,13 @@ const writeCollection = async (collection: string, data: any[]) => {
       await put(`db/${collection}.json`, JSON.stringify(data, null, 2), {
         access: 'public',
         addRandomSuffix: false,
+        allowOverwrite: true,
         contentType: 'application/json; charset=utf-8'
       });
       return;
     } catch (err) {
       console.error(`Error writing to Vercel Blob collection ${collection}:`, err);
+      throw err;
     }
   }
 
