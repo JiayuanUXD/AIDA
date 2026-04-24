@@ -15,10 +15,12 @@ export interface Category {
 export interface Difference {
   id: string;
   type: 'content' | 'layout' | 'style';
+  title?: string;
   description: string;
   severity: 'low' | 'medium' | 'high';
   rect: { x: number; y: number; width: number; height: number };
   status: 'pending' | 'fixed' | 'ignored';
+  imageUrl?: string;
 }
 
 export interface Mark {

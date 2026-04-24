@@ -13,6 +13,9 @@ import {
   LayoutGrid,
   LayoutList,
   Bell,
+  User as UserIcon,
+  LogOut,
+  LogIn,
   X,
   Settings,
   Moon,
@@ -20,12 +23,17 @@ import {
   Monitor,
   ChevronRight,
   Check,
+  UserCircle,
   Edit2,
   GripVertical
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence, Reorder } from 'motion/react';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc, updateDoc, setDoc, writeBatch } from '../lib/localStorageService';
+import { db, auth, googleProvider, signInWithPopup } from '../firebase';
+import { collection, query, where, orderBy, onSnapshot, addDoc, serverTimestamp, deleteDoc, doc, updateDoc, setDoc, writeBatch } from 'firebase/firestore';
+import { onAuthStateChanged, signOut, signInAnonymously } from 'firebase/auth';
+import AuthModal from '../components/AuthModal';
+import ProfileModal from '../components/ProfileModal';
 
 interface Project {
   id: string;
@@ -80,6 +88,8 @@ const formatRelativeDate = (timestamp: number | any) => {
 
 export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { theme: 'light' | 'dark' | 'system', setTheme: (theme: 'light' | 'dark' | 'system') => void, resolvedTheme: 'light' | 'dark' }) {
   const navigate = useNavigate();
+  const [user, setUser] = useState<any>(null);
+  const [userProfile, setUserProfile] = useState<{displayName?: string, role?: string}>({});
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState('Last modified');
@@ -96,13 +106,14 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   const [isLoading, setIsLoading] = useState(true);
   const [categories, setCategories] = useState<Category[]>([]);
   const [activeCategory, setActiveCategory] = useState('All projects');
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [newProjectName, setNewProjectName] = useState('New Project');
   const [isDeletingId, setIsDeletingId] = useState<string | null>(null);
   const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
   const [hoveredCategoryId, setHoveredCategoryId] = useState<string | null>(null);
   const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
   const [editCategoryName, setEditCategoryName] = useState('');
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showUserDropdown, setShowUserDropdown] = useState(false);
   const [showThemeSubmenu, setShowThemeSubmenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, categoryId: string } | null>(null);
 
@@ -113,7 +124,10 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      setShowThemeSubmenu(false);
+      if (!target.closest('.user-profile-trigger') && !target.closest('.user-dropdown-menu')) {
+        setShowUserDropdown(false);
+        setShowThemeSubmenu(false);
+      }
       if (!target.closest('.context-menu')) {
         setContextMenu(null);
       }
@@ -123,46 +137,80 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   }, []);
 
   useEffect(() => {
-    // Fetch Projects
-    const qProjects = query(
-      collection('projects'),
-      orderBy('updatedAt', 'desc')
-    );
-    const unsubscribeProjects = onSnapshot(qProjects, (snapshot) => {
-      const projs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Project[];
-      setProjects(projs);
-      setIsLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      setUser(u);
+      if (u) {
+        try {
+          const docRef = doc(db, 'users', u.uid);
+          console.log("Fetching user profile for:", u.uid);
+          const unsubscribeDoc = onSnapshot(docRef, (docSnap) => {
+            if (docSnap.exists()) {
+              setUserProfile(docSnap.data());
+            }
+          });
+          return () => unsubscribeDoc();
+        } catch (error) {
+          console.error("Error fetching user profile:", error);
+        }
+      } else {
+        setUserProfile({});
+        // Auto-login anonymously
+        signInAnonymously(auth).catch(err => console.error("Anon login failed", err));
+      }
     });
-
-    // Fetch Categories
-    const qCategories = query(
-      collection('categories')
-    );
-    const unsubscribeCategories = onSnapshot(qCategories, (snapshot) => {
-      const cats = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Category[];
-      // Sort by order, then by createdAt
-      cats.sort((a, b) => {
-        const orderA = a.order ?? 0;
-        const orderB = b.order ?? 0;
-        if (orderA !== orderB) return orderA - orderB;
-        const timeA = a.createdAt ?? 0;
-        const timeB = b.createdAt ?? 0;
-        return timeA - timeB;
-      });
-      setCategories(cats);
-    });
-
-    return () => {
-      unsubscribeProjects();
-      unsubscribeCategories();
-    };
+    return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (user) {
+      // Fetch Projects - Filter by userId for privacy, but allow unowned projects to appear (if any)
+      const qProjects = query(
+        collection(db, 'projects'),
+        where('userId', '==', user.uid),
+        orderBy('updatedAt', 'desc')
+      );
+      const unsubscribeProjects = onSnapshot(qProjects, (snapshot) => {
+        const projs = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Project[];
+        setProjects(projs);
+        setIsLoading(false);
+      }, (error) => {
+        console.error("Error fetching projects:", error);
+        setIsLoading(false);
+      });
+
+      // Fetch Categories
+      const qCategories = query(
+        collection(db, 'categories'),
+        where('userId', '==', user.uid)
+      );
+      const unsubscribeCategories = onSnapshot(qCategories, (snapshot) => {
+        const cats = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as Category[];
+        // Sort by order, then by createdAt
+        cats.sort((a, b) => {
+          const orderA = a.order ?? 0;
+          const orderB = b.order ?? 0;
+          if (orderA !== orderB) return orderA - orderB;
+          const timeA = a.createdAt?.toMillis?.() ?? 0;
+          const timeB = b.createdAt?.toMillis?.() ?? 0;
+          return timeA - timeB;
+        });
+        setCategories(cats);
+      }, (error) => {
+        console.error("Error fetching categories:", error);
+      });
+
+      return () => {
+        unsubscribeProjects();
+        unsubscribeCategories();
+      };
+    }
+  }, [user]);
 
   const filteredProjects = projects.filter(p => {
     const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase());
@@ -173,25 +221,29 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   });
 
   const handleCreateProject = async () => {
-    setShowCreateModal(true);
-  };
-
-  const confirmCreateProject = async () => {
-    if (!newProjectName.trim()) return;
-
+    if (!user) {
+      setShowAuthModal(true);
+      return;
+    }
+    
     try {
-      const projectId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+      const projectsRef = collection(db, 'projects');
+      const newProjectDoc = doc(projectsRef);
+      const projectId = newProjectDoc.id;
 
-      setShowCreateModal(false);
-      await setDoc(doc('projects', projectId), {
-        name: newProjectName,
+      // Navigate immediately
+      navigate(`/checker/${projectId}`);
+
+      // Perform the write in the background
+      await setDoc(newProjectDoc, {
+        name: 'New Project',
+        userId: user.uid,
         updatedAt: Date.now(),
         thumbnail: 'https://picsum.photos/seed/' + Math.random() + '/400/300',
         isStarred: false,
         category: 'All projects',
-        members: []
+        members: [user.uid]
       });
-      navigate(`/checker/${projectId}`);
     } catch (error) {
       console.error("Error creating project:", error);
     }
@@ -208,7 +260,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
     // Close modal immediately for better UX
     setIsDeletingId(null);
     try {
-      await updateDoc(doc('projects', idToTrash), { category: 'Trash' });
+      await updateDoc(doc(db, 'projects', idToTrash), { category: 'Trash' });
     } catch (error) {
       console.error("Error moving project to trash:", error);
     }
@@ -217,7 +269,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   const toggleStar = async (id: string, current: boolean, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await updateDoc(doc('projects', id), {
+      await updateDoc(doc(db, 'projects', id), {
         isStarred: !current
       });
     } catch (error) {
@@ -226,9 +278,11 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   };
 
   const handleCreateCategory = async () => {
+    if (!user) return;
     try {
-      const docRef = await addDoc(collection('categories'), {
+      const docRef = await addDoc(collection(db, 'categories'), {
         name: 'New Category',
+        userId: user.uid,
         createdAt: serverTimestamp(),
         order: categories.length
       });
@@ -244,9 +298,10 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
     setCategories(newOrder);
     
     try {
-      const batch = await writeBatch();
+      const batch = writeBatch(db);
       newOrder.forEach((cat, index) => {
-        batch.update('categories', cat.id, { order: index });
+        const catRef = doc(db, 'categories', cat.id);
+        batch.update(catRef, { order: index });
       });
       await batch.commit();
     } catch (error) {
@@ -258,7 +313,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
   const handleSaveCategory = async (id: string) => {
     if (!editCategoryName.trim()) return;
     try {
-      await updateDoc(doc('categories', id), {
+      await updateDoc(doc(db, 'categories', id), {
         name: editCategoryName
       });
       setEditingCategoryId(null);
@@ -269,7 +324,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
 
   const handleDeleteCategory = async (id: string) => {
     try {
-      await deleteDoc(doc('categories', id));
+      await deleteDoc(doc(db, 'categories', id));
       if (activeCategory === id) {
         setActiveCategory('All projects');
       }
@@ -299,8 +354,8 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       // Interaction-first: Show toast immediately
       addToast(`Moved project to ${catName}`);
 
-      // Update local storage in the background
-      updateDoc(doc('projects', draggedProjectId), {
+      // Update Firestore in the background
+      updateDoc(doc(db, 'projects', draggedProjectId), {
         category: hoveredCategoryId
       }).catch(error => {
         console.error("Error updating project category:", error);
@@ -316,7 +371,156 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       {/* Sidebar */}
       <aside className={`min-w-[16rem] w-fit max-w-xs border-r flex flex-col p-4 relative z-50 transition-colors duration-200 ${isDark ? 'bg-[#1e1e1e] border-[#383838]' : 'bg-white border-gray-200'}`}>
         <div className="flex items-center justify-between mb-8 relative">
-          <h1 className="text-xl font-bold">AIDA</h1>
+          <div 
+            className={`user-profile-trigger flex items-center gap-2 cursor-pointer p-1.5 -ml-1.5 rounded-xl transition-colors min-w-0 ${isDark ? 'hover:bg-white/5' : 'hover:bg-gray-50'}`}
+            onClick={() => setShowUserDropdown(!showUserDropdown)}
+          >
+            <div className={`w-8 h-8 rounded-full overflow-hidden shrink-0 ${user?.isAnonymous ? 'bg-amber-100 text-amber-600' : 'bg-gray-200'}`}>
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt="User" className="w-full h-full object-cover" />
+              ) : (
+                <div className={`w-full h-full flex items-center justify-center ${user?.isAnonymous ? 'bg-amber-100 text-amber-600' : 'bg-indigo-100 text-indigo-600'}`}>
+                  <UserIcon className="w-4 h-4" />
+                </div>
+              )}
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="font-medium text-sm whitespace-nowrap">
+                {user?.isAnonymous ? 'Guest' : (userProfile.displayName || user?.displayName || 'User')}
+              </span>
+              {user?.isAnonymous ? (
+                <span className="text-[10px] text-amber-600 font-bold uppercase tracking-tighter">Temporary</span>
+              ) : userProfile.role ? (
+                <span className="text-xs text-gray-500 whitespace-nowrap">
+                  {userProfile.role}
+                </span>
+              ) : null}
+            </div>
+            <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${showUserDropdown ? 'rotate-180' : ''}`} />
+          </div>
+
+          <AnimatePresence>
+            {showUserDropdown && (
+              <motion.div
+                initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                className="user-dropdown-menu absolute top-full left-0 mt-2 w-full min-w-[200px] bg-[#1e1e1e] text-white rounded-2xl shadow-2xl border border-white/10 z-[100]"
+              >
+                {/* User Info Section */}
+                <div className="p-4 flex flex-col items-center text-center border-b border-white/5">
+                  <div className="relative mb-3">
+                    <div className="w-16 h-16 rounded-full bg-gray-700 overflow-hidden ring-4 ring-white/5">
+                      {user?.photoURL ? (
+                        <img src={user.photoURL} alt="User" className="w-full h-full object-cover" />
+                      ) : (
+                        <div className={`w-full h-full flex items-center justify-center ${user?.isAnonymous ? 'bg-amber-500/20 text-amber-400' : 'bg-indigo-500/20 text-indigo-400'}`}>
+                          <UserIcon className="w-8 h-8" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <h3 className="font-bold text-base mb-0.5">
+                    {user?.isAnonymous ? 'Guest User' : (userProfile.displayName || user?.displayName || 'User')}
+                  </h3>
+                  <p className="text-xs text-gray-500 truncate w-full px-4">
+                    {user?.isAnonymous ? 'Logged in as guest. Sign in to save across devices.' : (user?.email || 'No email provided')}
+                  </p>
+                </div>
+
+                {/* Menu Items */}
+                <div className="p-1.5 space-y-0.5">
+                  {!user ? (
+                    <button 
+                      onClick={() => {
+                        signInWithPopup(auth, googleProvider);
+                        setShowUserDropdown(false);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-indigo-500/10 text-indigo-400 transition-colors"
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-indigo-500/10 flex items-center justify-center">
+                        <LogIn className="w-3.5 h-3.5" />
+                      </div>
+                      <span className="font-medium text-sm">登录 / 注册</span>
+                    </button>
+                  ) : (
+                    <>
+                      <div className="relative">
+                        <button 
+                          onClick={() => setShowThemeSubmenu(!showThemeSubmenu)}
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-xl transition-colors ${showThemeSubmenu ? 'bg-indigo-600 text-white' : 'hover:bg-white/5 text-gray-300'}`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${showThemeSubmenu ? 'bg-white/20' : 'bg-white/5'}`}>
+                              <Monitor className="w-3.5 h-3.5" />
+                            </div>
+                            <span className="font-medium text-sm">主题</span>
+                          </div>
+                          <ChevronRight className={`w-3.5 h-3.5 transition-transform ${showThemeSubmenu ? 'rotate-90' : ''}`} />
+                        </button>
+
+                        <AnimatePresence>
+                          {showThemeSubmenu && (
+                            <motion.div
+                              initial={{ opacity: 0, x: 10 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              exit={{ opacity: 0, x: 10 }}
+                              className="user-dropdown-menu absolute left-full top-0 ml-2 w-40 bg-[#2c2c2c] border border-white/10 rounded-2xl shadow-2xl p-1.5 z-[110]"
+                            >
+                              {[
+                                { id: 'light', icon: <Sun className="w-3.5 h-3.5" />, label: '明亮模式' },
+                                { id: 'dark', icon: <Moon className="w-3.5 h-3.5" />, label: '暗黑模式' },
+                                { id: 'system', icon: <Monitor className="w-3.5 h-3.5" />, label: '跟随系统' }
+                              ].map((item) => (
+                                <button
+                                  key={item.id}
+                                  onClick={() => {
+                                    setTheme(item.id as any);
+                                    setShowThemeSubmenu(false);
+                                    setShowUserDropdown(false);
+                                  }}
+                                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 text-xs text-gray-300 transition-colors"
+                                >
+                                  <div className="flex items-center gap-2.5">
+                                    {item.icon}
+                                    <span>{item.label}</span>
+                                  </div>
+                                  {theme === item.id && <Check className="w-3.5 h-3.5 text-indigo-400" />}
+                                </button>
+                              ))}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+
+                      <button className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-white/5 text-gray-300 transition-colors">
+                        <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center">
+                          <Settings className="w-3.5 h-3.5" />
+                        </div>
+                        <span className="font-medium text-sm">设置</span>
+                      </button>
+
+                      <div className="h-px bg-white/5 my-1 mx-2" />
+
+                      <button 
+                        onClick={() => {
+                          signOut(auth);
+                          setShowUserDropdown(false);
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-red-500/10 text-gray-300 hover:text-red-400 transition-colors"
+                      >
+                        <div className="w-7 h-7 rounded-lg bg-white/5 flex items-center justify-center">
+                          <LogOut className="w-3.5 h-3.5" />
+                        </div>
+                        <span className="font-medium text-sm">退出登录</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
           <div className="flex items-center gap-2">
             <Bell className="w-5 h-5 text-gray-400 cursor-pointer" />
           </div>
@@ -474,7 +678,7 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
                   onStar={(e) => toggleStar(project.id, project.isStarred, e)}
                   onDragStart={() => setDraggedProjectId(project.id)}
                   onDragEnd={handleDragEnd}
-                  isOwner={true}
+                  isOwner={!project.userId || user?.uid === project.userId}
                   theme={theme}
                 />
               ))}
@@ -490,56 +694,6 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
       </main>
 
       {/* Create Project Modal */}
-      <AnimatePresence>
-        {showCreateModal && (
-          <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
-            >
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-xl font-bold">Create New Project</h2>
-                  <button onClick={() => setShowCreateModal(false)} className="p-1 hover:bg-gray-100 rounded-full">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-400 uppercase mb-1">Project Name</label>
-                    <input 
-                      type="text" 
-                      maxLength={100}
-                      value={newProjectName}
-                      onChange={(e) => setNewProjectName(e.target.value)}
-                      autoFocus
-                      className="w-full px-4 py-3 bg-gray-50 border border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all"
-                      placeholder="e.g. Website Redesign"
-                    />
-                  </div>
-                </div>
-              </div>
-              <div className="p-4 bg-gray-50 flex gap-3">
-                <button 
-                  onClick={() => setShowCreateModal(false)}
-                  className="flex-1 px-4 py-2.5 text-sm font-medium text-gray-600 hover:bg-gray-200 rounded-xl transition-colors"
-                >
-                  Cancel
-                </button>
-                <button 
-                  onClick={confirmCreateProject}
-                  className="flex-1 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-colors shadow-lg shadow-indigo-500/20"
-                >
-                  Create Project
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
       {/* Delete Confirmation Modal */}
       <AnimatePresence>
         {isDeletingId && (
@@ -597,7 +751,8 @@ export default function ProjectManagement({ theme, setTheme, resolvedTheme }: { 
         </AnimatePresence>
       </div>
 
-
+      <AuthModal isOpen={showAuthModal} onClose={() => setShowAuthModal(false)} />
+      <ProfileModal isOpen={showProfileModal} onClose={() => setShowProfileModal(false)} />
 
       {/* Context Menu */}
       <AnimatePresence>

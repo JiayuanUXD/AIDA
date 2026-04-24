@@ -18,6 +18,14 @@
   scrollbar-width: none;
 }
 
+@keyframes scan {
+  0% { top: -20%; }
+  100% { top: 120%; }
+}
+.animate-scan {
+  animation: scan 2s linear infinite;
+}
+
 /* Custom scrollbar for a cleaner look */
 ::-webkit-scrollbar {
   width: 6px;
