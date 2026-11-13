@@ -1,9 +1,26 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>项目详情页</title>
+    <title>AIDA · 设计走查工作台</title>
+    <script>
+      // 首屏之前先套用已保存的语言与外观，避免英文用户看到中文标题、或深色用户看到一帧浅色
+      (function () {
+        try {
+          var lang = localStorage.getItem('aida:language') === 'en' ? 'en-US' : 'zh-CN';
+          document.documentElement.lang = lang;
+          if (lang === 'en-US') document.title = 'AIDA · Design Review';
+          var theme = localStorage.getItem('theme');
+          var dark = theme === 'dark' ||
+            (theme !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          if (dark) document.documentElement.classList.add('dark');
+          document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+        } catch (e) {
+          // 存储不可用时用默认（简体中文 / 跟随系统）
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
